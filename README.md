@@ -1,5 +1,9 @@
 # TrustGate (`tg`) — Local Trust Gate for AI-Written Code
 
+[![CI](https://github.com/ZachDreamZ/trustgate/actions/workflows/ci.yml/badge.svg)](https://github.com/ZachDreamZ/trustgate/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ZachDreamZ/trustgate)](https://github.com/ZachDreamZ/trustgate/releases)
+[![License](https://img.shields.io/github/license/ZachDreamZ/trustgate)](LICENSE)
+
 Single static binary. Local-first. Code never leaves your machine.
 
 `tg gate` blocks AI-code merges unless every AI claim cites exact files, tests,

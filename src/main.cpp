@@ -8,7 +8,7 @@
 #include "cli/commands.h"
 
 namespace tg {
-const char* kTgVersion = "0.1.0";
+const char* kTgVersion = "0.2.0";
 }  // namespace tg
 
 int main(int argc, char** argv) {
