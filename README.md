@@ -29,6 +29,14 @@ No OSS combines evidence-enforcement + repro fingerprint + flake quarantine in
 one offline binary. That is the unoccupied niche (see also YC Fall 2026 RFS:
 trust layer, self-maintaining APIs, compliance infra).
 
+## Install
+
+Download a prebuilt binary from
+[GitHub Releases](https://github.com/ZachDreamZ/trustgate/releases)
+(`tg-windows-x64.zip` / `tg-linux-x64.tar.gz`, each bundled with LICENSE
+and README), or build from source below. Releases are cut from `v*` tags,
+kept in sync with the project version.
+
 ## Quickstart
 
 Prerequisites: CMake >= 3.20 and a C++17 compiler (MSVC 2022 BuildTools,

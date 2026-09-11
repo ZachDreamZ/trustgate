@@ -1,0 +1,71 @@
+name: release
+
+# Tagged releases with prebuilt binaries: `git tag v0.1.0 && git push origin v0.1.0`.
+# Keep the tag in sync with the project VERSION in CMakeLists.txt / main.cpp.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            asset: tg-windows-x64.zip
+            stage: tg-windows-x64
+            bin: build/tg.exe
+          - os: ubuntu-latest
+            asset: tg-linux-x64.tar.gz
+            stage: tg-linux-x64
+            bin: build/tg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Configure (Linux)
+        if: runner.os != 'Windows'
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Package
+        shell: bash
+        run: |
+          STAGE="dist/${{ matrix.stage }}"
+          rm -rf dist && mkdir -p "$STAGE"
+          cp "${{ matrix.bin }}" LICENSE README.md "$STAGE/"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cmake -E tar cf "${{ matrix.asset }}" --format=zip -- "$STAGE"
+          else
+            cmake -E tar cfz "${{ matrix.asset }}" -- "$STAGE"
+          fi
+          ls -la "${{ matrix.asset }}"
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}
+          generate_release_notes: true
