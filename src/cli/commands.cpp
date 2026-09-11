@@ -12,6 +12,7 @@
 #include "attest/sign.h"
 #include "core/fsutil.h"
 #include "core/json.h"
+#include "core/proc.h"
 #include "eval/eval.h"
 #include "evidence/claims.h"
 #include "evidence/policy.h"
@@ -120,16 +121,11 @@ void printTopHelp() {
         << "  eval          run deterministic eval scenarios (evals/*.json)\n"
         << "  sign          HMAC-SHA256 sign a file (attestation)\n"
         << "  verify        verify a file signature (exit 2 when INVALID)\n"
-        << "  wrap          v1.0 roadmap (not implemented yet)\n"
+        << "  wrap          run a command, capture output+exit as claim evidence\n"
         << "\n"
         << "Exit codes: 0 pass, 2 DENY / eval FAIL / INVALID signature,\n"
         << "  4 fingerprint drift, 1 usage or IO error, 3 not implemented.\n"
         << "Run `tg <command> --help` for command options.\n";
-}
-
-int cmdStub(const std::string& name) {
-    std::cout << "tg " << name << " is on the v1.0 roadmap (see README). Nothing to do.\n";
-    return 3;
 }
 
 int cmdSign(const std::vector<std::string>& args) {
@@ -242,6 +238,87 @@ int cmdVerify(const std::vector<std::string>& args) {
     }
     std::cout << "VALID " + inPath + "\n";
     return 0;
+}
+
+int cmdWrap(const std::vector<std::string>& args) {
+    // Split raw args at the first "--": everything before is tg flags,
+    // everything after is the wrapped command (argv items rejoined for sh).
+    std::size_t sep = args.size();
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--") {
+            sep = i;
+            break;
+        }
+    }
+    std::vector<std::string> flags(args.begin(), args.begin() + sep);
+    std::vector<std::string> cmdTokens;
+    if (sep + 1 < args.size()) cmdTokens.assign(args.begin() + sep + 1, args.end());
+
+    ParsedArgs p = parseFlags(flags, {"help"});
+    if (optBool(p, "help")) {
+        std::cout << "Usage: tg wrap --out claims.json --log run.log [--id ID]\n"
+                     "               [--text TEXT] -- <command> [args ...]\n"
+                     "Runs the command, captures output+exit code, and writes a claims\n"
+                     "skeleton citing the log as a runtime artifact. Files/tests stay\n"
+                     "empty for the author to fill. Exit code is the wrapped\n"
+                     "command's (outputs are always written first). The command runs\n"
+                     "in a shell with user privileges and no timeout enforcement.\n"
+                     "Logs stream to disk (64MB cap, disclosed in output when hit).\n";
+        return 0;
+    }
+    if (cmdTokens.empty()) {
+        std::cerr << "need a command after -- (e.g. tg wrap --out c.json --log r.log -- make test)\n";
+        return 1;
+    }
+    std::string outPath = optOnce(p, "out", "claims.json");
+    std::string logPath = optOnce(p, "log", "tg-wrap.log");
+    std::string id = optOnce(p, "id", "run");
+    if (id.empty()) {
+        std::cerr << "--id must not be empty\n";
+        return 1;
+    }
+    std::string cmdline;
+    for (const std::string& tok : cmdTokens) {
+        if (!cmdline.empty()) cmdline.push_back(' ');
+        bool quote = tok.empty() || tok.find_first_of(" \t\"") != std::string::npos;
+        if (quote) cmdline.push_back('"');
+        cmdline += tok;
+        if (quote) cmdline.push_back('"');
+    }
+    // NOTE: shell execution is by design (pipelines welcome); see help.
+    // Output streams straight to the log file so large outputs stay
+    // faithful (64MB cap, disclosed in output when hit).
+    ensureParentDir(logPath);
+    ProcResult r = runCaptureToFile(cmdline, logPath);
+    if (r.exitCode == -1) {
+        std::cerr << "cannot capture output (unwritable log or failed spawn): " + logPath + "\n";
+        return 1;
+    }
+    std::string text = optOnce(p, "text", "");
+    if (text.empty()) {
+        text = cmdline + " (exit " + std::to_string(r.exitCode) + ")";
+    }
+    JsonValue claim = JsonValue::makeObject();
+    claim.object["id"] = JsonValue::makeString(id);
+    claim.object["text"] = JsonValue::makeString(text);
+    claim.object["files"] = JsonValue::makeArray();
+    claim.object["tests"] = JsonValue::makeArray();
+    JsonValue arts = JsonValue::makeArray();
+    arts.array.push_back(JsonValue::makeString(logPath));
+    claim.object["artifacts"] = arts;
+    JsonValue root = JsonValue::makeObject();
+    JsonValue claims = JsonValue::makeArray();
+    claims.array.push_back(claim);
+    root.object["claims"] = claims;
+    ensureParentDir(outPath);
+    if (!writeFile(outPath, toJson(root, true) + "\n")) {
+        std::cerr << "cannot write claims file: " + outPath + "\n";
+        return 1;
+    }
+    std::cout << "wrap: exit " + std::to_string(r.exitCode) + " (" +
+                     std::to_string(r.bytesWritten) + " bytes -> " + logPath + ", claims -> " +
+                     outPath + ")" + (r.truncated ? " [log truncated at 64MB]" : "") + "\n";
+    return r.exitCode;
 }
 
 int cmdInit(const std::vector<std::string>& args) {

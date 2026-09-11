@@ -294,7 +294,7 @@ def main():
     p = run(tg, "nope", cwd=tmp)
     check("unknown command exit 1", p.returncode == 1, f"got {p.returncode}")
     p = run(tg, "wrap", cwd=tmp)
-    check("roadmap stub exit 3", p.returncode == 3, f"got {p.returncode}")
+    check("wrap missing command exit 1", p.returncode == 1, f"got {p.returncode}")
     p = run(tg, "eval", cwd=tmp)
     check("eval missing dir exit 1", p.returncode == 1, f"got {p.returncode}")
 
@@ -431,6 +431,46 @@ def main():
     p = run(tg, "verify", "--in", "data.txt", "--sig", "bad.sig",
             "--key-file", "k.hex", cwd=sdir)
     check("garbage sig exit 1", p.returncode == 1, f"got {p.returncode}")
+
+    # --- 14. wrap: capture + claims skeleton + exit passthrough ---
+    wdir = os.path.join(tmp, "wrap")
+    os.makedirs(wdir)
+    p = run(tg, "wrap", "--out", "wclaims.json", "--log", "w.log", "--id", "W1",
+            "--", tg, "--version", cwd=wdir)
+    check("wrap exit 0", p.returncode == 0, p.stderr)
+    wc = json.load(open(os.path.join(wdir, "wclaims.json"), encoding="utf-8"))
+    check("wrap claim skeleton",
+          wc["claims"][0]["id"] == "W1" and wc["claims"][0]["artifacts"] == ["w.log"],
+          str(wc))
+    check("wrap log captured",
+          "tg " in open(os.path.join(wdir, "w.log"), encoding="utf-8").read())
+    write(os.path.join(wdir, "wpolicy.json"), json.dumps({
+        "require_file_citation": False, "require_test_citation": False,
+        "require_artifact_citation": True, "quarantine_allow": True}))
+    p = run(tg, "gate", "--claims", "wclaims.json", "--policy", "wpolicy.json",
+            "--repo", ".", "--out", "wverdict.json", cwd=wdir)
+    check("wrap->gate loop PASS", p.returncode == 0, f"got {p.returncode}: {p.stdout}")
+    p = run(tg, "wrap", "--out", "q.json", "--log", "q.log",
+            "--", "echo", "hello world", cwd=wdir)
+    check("wrap spaced arg exit 0", p.returncode == 0, p.stderr)
+    check("wrap quotes spaced args",
+          "hello world" in open(os.path.join(wdir, "q.log"), encoding="utf-8").read())
+    p = run(tg, "wrap", "--out", "f.json", "--log", "f.log", "--", tg, "nope", cwd=wdir)
+    check("failing command exit passthrough",
+          p.returncode == 1 and os.path.isfile(os.path.join(wdir, "f.json"))
+          and os.path.isfile(os.path.join(wdir, "f.log")), f"got {p.returncode}")
+    p = run(tg, "wrap", "--out", "x.json", cwd=wdir)
+    check("missing -- exit 1", p.returncode == 1, f"got {p.returncode}")
+    big_script = ("print('WRAP-BIG-START'); print('0123456789abcdef' * 4096); "
+                  "print('WRAP-BIG-MID'); print('0123456789abcdef' * 4096); "
+                  "print('WRAP-BIG-END')")
+    p = run(tg, "wrap", "--out", "big.json", "--log", "big.log", "--",
+            sys.executable, "-c", big_script, cwd=wdir)
+    check("wrap big output exit 0", p.returncode == 0, p.stderr)
+    biglog = open(os.path.join(wdir, "big.log"), encoding="utf-8").read()
+    check("wrap big output complete",
+          "WRAP-BIG-START" in biglog and "WRAP-BIG-MID" in biglog
+          and "WRAP-BIG-END" in biglog and len(biglog) > 100000, str(len(biglog)))
 
     print(f"\n{len(FAILURES)} failures in {tmp}")
     return 1 if FAILURES else 0

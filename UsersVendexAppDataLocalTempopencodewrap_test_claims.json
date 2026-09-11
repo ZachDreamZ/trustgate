@@ -1,0 +1,13 @@
+{
+  "claims": [
+    {
+      "artifacts": [
+        "C:UsersVendexAppDataLocalTempopencodewrap_test_run.log"
+      ],
+      "files": [],
+      "id": "run",
+      "tests": [],
+      "text": "cmd C:/ \"echo hello-wrap & exit 0\" (exit 0)"
+    }
+  ]
+}

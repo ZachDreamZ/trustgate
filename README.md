@@ -77,10 +77,11 @@ tg eval --trend [--last N]
 tg sign --gen-key KEYFILE
 tg sign --in FILE --sig SIGFILE [--key HEX | --key-file F | --key-env N]
 tg verify --in FILE --sig SIGFILE [--key HEX | --key-file F | --key-env N]
+tg wrap --out claims.json --log run.log [--id ID] [--text TEXT] -- <command> [args ...]
 ```
 
 Exit codes: `0` pass (or warn-only), `2` DENY / eval FAIL / INVALID signature,
-`4` fingerprint drift, `1` usage/IO error, `3` not implemented (`wrap`).
+`4` fingerprint drift, `1` usage/IO error, `3` not implemented.
 
 ### claims.json
 
@@ -106,7 +107,7 @@ tests degrade to warnings when the policy allows it.
 
 ```text
 src/main.cpp                 CLI dispatch
-src/cli/commands.*           init|gate|fingerprint|flake|eval|sign|verify (+ wrap stub)
+src/cli/commands.*           init|gate|fingerprint|flake|eval|sign|verify|wrap
 src/core/json.*              minimal JSON parser/serializer (sufficient subset)
 src/core/fsutil.*            file IO, FNV-1a-64 hashing (BLAKE3 upgrade path)
 src/core/mmap.*              memory-mapped file reads (Windows + POSIX)
@@ -132,11 +133,11 @@ schemas/policy.schema.json   policy JSON Schema (draft-07)
 
 Shipped: evidence gate, repro fingerprint (threads/mmap/cache), flake triage
 with root-cause ranking and systemic co-occurrence clustering, EvalOps Lite
-(`tg eval`), HMAC-SHA256 attestations (`tg sign` / `tg verify`), reusable
-action, tagged releases with prebuilt binaries.
+(`tg eval`), HMAC-SHA256 attestations (`tg sign` / `tg verify`), command
+capture (`tg wrap` feeding `tg gate`), reusable action, tagged releases with
+prebuilt binaries.
 
-Next: `tg wrap` (agent output capture), SARIF rules metadata, timing-based
-cause rules, VS Code extension.
+Next: SARIF rules metadata, timing-based cause rules, VS Code extension.
 - Hardening path (no behavior change): BLAKE3 file hashing, SQLite evidence
   store (replacing JSONL), libgit2 diff (replacing `git` shell-out),
   tree-sitter symbol refs, GoogleTest unit suite.

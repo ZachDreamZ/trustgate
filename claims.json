@@ -1,0 +1,13 @@
+{
+  "claims": [
+    {
+      "artifacts": [
+        "C:/Users/Vendex/AppData/Local/Temp/e1.log"
+      ],
+      "files": [],
+      "id": "run",
+      "tests": [],
+      "text": "echo hi (exit 0)"
+    }
+  ]
+}
