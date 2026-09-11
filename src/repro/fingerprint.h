@@ -38,6 +38,9 @@ struct FingerprintOptions {
     // Probe git/cmake versions into toolchain (costs ~2 process spawns).
     // Note: disabling changes the fingerprint ID (toolchain section empties).
     bool probeToolchain = true;
+    // File-hash cache (size+mtime validated). Empty cachePath disables.
+    bool useCache = true;
+    std::string cachePath;
 };
 
 struct FingerprintResult {

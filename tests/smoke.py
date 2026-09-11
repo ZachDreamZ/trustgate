@@ -245,7 +245,25 @@ def main():
     p = run(tg, "init", "--path", ".", "--force", cwd=initproj)
     check("init --force overwrites", p.returncode == 0, p.stderr)
 
-    # --- 9. version + unknown command codes ---
+    # --- 9. hash cache: same ID with/without cache, cache file created ---
+    # (srcdir was drifted in step 6; id3 is the uncached drifted ID.)
+    cache_path = os.path.join(tmp, "fp-cache.json")
+    p = run(tg, "fingerprint", "--path", srcdir, "--out", "c1.json",
+            "--cache", cache_path, cwd=repo)
+    check("fingerprint --cache exit 0", p.returncode == 0, p.stderr)
+    check("cache file created", os.path.isfile(cache_path))
+    id_c1 = json.load(open(os.path.join(repo, "c1.json"), encoding="utf-8"))["id"]
+    check("cache ID matches uncached ID", id_c1 == id3, f"{id_c1} vs {id3}")
+    p = run(tg, "fingerprint", "--path", srcdir, "--out", "c2.json",
+            "--cache", cache_path, cwd=repo)
+    id_c2 = json.load(open(os.path.join(repo, "c2.json"), encoding="utf-8"))["id"]
+    check("cached rerun same ID", id_c1 == id_c2, f"{id_c1} vs {id_c2}")
+    check("cached rerun reports reuse", "hash cache" in p.stdout, p.stdout[:200])
+    p = run(tg, "fingerprint", "--path", srcdir, "--out", "c3.json", "--no-cache", cwd=repo)
+    id_c3 = json.load(open(os.path.join(repo, "c3.json"), encoding="utf-8"))["id"]
+    check("no-cache same ID", id_c3 == id_c1, f"{id_c3} vs {id_c1}")
+
+    # --- 10. version + unknown command codes ---
     p = run(tg, "--version", cwd=tmp)
     check("version exit 0", p.returncode == 0 and "tg " in p.stdout, p.stdout)
     p = run(tg, "nope", cwd=tmp)

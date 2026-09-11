@@ -7,6 +7,25 @@ the script does not overwrite existing fixture trees.)
 Machine (all numbers below): Windows 11, MSVC 19.44 Release build,
 NVMe SSD, Windows Defender default settings.
 
+## v0.2-dev: mmap reads + validated hash cache
+
+| Benchmark | Result | Notes |
+|---|---|---|
+| `ctest` suite (35 checks) | 100% pass | incl. cache ID-stability + reuse assertions |
+| Fingerprint, 50 files / 524 MB, uncached (mmap) | **1.28 s (~410 MB/s)** | zero-copy page-cache reads |
+| Fingerprint, same tree, cached rerun | **0.11 s, 50/50 reused (11.7×)** | stable ID; single-change rerun rehashes 1 file, ID changes correctly |
+| Fingerprint, 5,001 small files, cached rerun | 0.55 s | ≈ wash vs 0.51 s uncached warm — see honesty note |
+| Fingerprint, 5,000 files, uncached warm | 0.51 s | mmap+threads (was 0.77 s) |
+
+Honesty note: the cache stores size+mtime(100ns ticks)+hash per path and
+skips I/O on exact hits. On warm small-file trees the cache's own JSON
+round-trip costs about as much as re-hashing, so it breaks even there; it
+wins big whenever hashing dominates (large files: 11.7×) or reads are cold
+(skips AV-taxed first-touch reads). Corrupt/version-mismatched caches start
+fresh and never fail a run. Fixed en route: a real int64-overflow bug where
+Windows `file_clock` nanoseconds-since-1601 exceeded `LLONG_MAX` and silently
+disabled the cache — now 100ns ticks, caught by the new smoke assertions.
+
 ## v0.1.1-dev: portable thread-pool hashing (`std::thread`, no TBB)
 
 | Benchmark | Result | Notes |

@@ -332,6 +332,13 @@ int cmdFingerprint(const std::vector<std::string>& args) {
     fopts.root = optOnce(p, "path", ".");
     fopts.envNames = optAll(p, "env");
     fopts.probeToolchain = !optBool(p, "no-probe");
+    fopts.useCache = !optBool(p, "no-cache");
+    fopts.cachePath = optOnce(p, "cache", "");
+    if (fopts.cachePath.empty()) {
+        std::string r = fopts.root;
+        while (!r.empty() && (r.back() == '/' || r.back() == '\\')) r.pop_back();
+        fopts.cachePath = (r.empty() ? std::string(".") : r) + "/.trustgate/fp-cache.json";
+    }
     std::string outPath = optOnce(p, "out", "repro.json");
     // TrustGate's own outputs must not perturb the fingerprint when --out
     // lands inside the scanned tree (keeps back-to-back runs stable).
