@@ -544,7 +544,7 @@ int cmdFingerprint(const std::vector<std::string>& args) {
     fopts.excludeFilenames.push_back("repro.json");
     fopts.excludeFilenames.push_back("verdict.json");
     fopts.excludeFilenames.push_back("quarantine.yml");
-    fopts.excludeFilenames.push_back(fs::path(outPath).filename().generic_string());
+    fopts.excludeFilenames.push_back(pathToUtf8(fs::path(outPath).filename()));
     FingerprintResult res = computeFingerprint(fopts);
     ensureParentDir(outPath);
     if (!writeFile(outPath, toJson(fingerprintToJson(res.fp), true) + "\n")) {
@@ -705,7 +705,7 @@ namespace {
 void appendEvalHistory(const std::string& path, const std::string& name, bool pass,
                        long long ms) {
     ensureParentDir(path);
-    std::ofstream out(path, std::ios::app);
+    std::ofstream out(pathFromUtf8(path), std::ios::app);
     if (!out) return;  // history is best effort; results file is authoritative
     JsonValue line = JsonValue::makeObject();
     line.object["ts"] = JsonValue::makeString(utcNowIso());
@@ -806,9 +806,9 @@ int cmdEval(const std::vector<std::string>& args) {
         for (; !ec && it != end; it.increment(ec)) {
             if (ec) break;
             if (!it->is_regular_file(ec) || ec) continue;
-            std::string name = it->path().filename().generic_string();
+            std::string name = pathToUtf8(it->path().filename());
             if (name.size() >= 5 && name.compare(name.size() - 5, 5, ".json") == 0) {
-                files.push_back(it->path().generic_string());
+                files.push_back(pathToUtf8(it->path()));
             }
         }
         if (ec) {

@@ -461,6 +461,32 @@ def main():
           and os.path.isfile(os.path.join(wdir, "f.log")), f"got {p.returncode}")
     p = run(tg, "wrap", "--out", "x.json", cwd=wdir)
     check("missing -- exit 1", p.returncode == 1, f"got {p.returncode}")
+
+    # --- 15. unicode filenames: hashed (not crashed/skipped), citable ---
+    udir = os.path.join(tmp, "unicode")
+    os.makedirs(udir)
+    with open(os.path.join(udir, "snow-☃.txt"), "w", encoding="utf-8") as fh:
+        fh.write("cold\n")
+    p = run(tg, "fingerprint", "--path", udir, "--out", "u1.json", cwd=tmp)
+    check("unicode fingerprint exit 0", p.returncode == 0, p.stderr)
+    u1 = json.load(open(os.path.join(tmp, "u1.json"), encoding="utf-8"))
+    check("unicode file hashed",
+          any("snow-" in f.get("path", "") for f in u1.get("files", [])),
+          str(u1.get("files")))
+    p = run(tg, "fingerprint", "--path", udir, "--out", "u2.json", cwd=tmp)
+    u2 = json.load(open(os.path.join(tmp, "u2.json"), encoding="utf-8"))
+    check("unicode fingerprint stable", u1["id"] == u2["id"],
+          f'{u1["id"]} vs {u2["id"]}')
+    write(os.path.join(tmp, "uclaims.json"), json.dumps({
+        "claims": [{"id": "U1", "text": "unicode",
+                    "files": ["unicode/snow-☃.txt"],
+                    "artifacts": ["unicode/snow-☃.txt"]}]}))
+    write(os.path.join(tmp, "upolicy.json"), json.dumps({
+        "require_file_citation": True, "require_test_citation": False,
+        "require_artifact_citation": True, "quarantine_allow": True}))
+    p = run(tg, "gate", "--claims", "uclaims.json", "--policy", "upolicy.json",
+            "--repo", ".", "--out", "uverdict.json", cwd=tmp)
+    check("unicode gate PASS", p.returncode == 0, f"got {p.returncode}: {p.stdout}")
     big_script = ("print('WRAP-BIG-START'); print('0123456789abcdef' * 4096); "
                   "print('WRAP-BIG-MID'); print('0123456789abcdef' * 4096); "
                   "print('WRAP-BIG-END')")

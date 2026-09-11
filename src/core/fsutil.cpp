@@ -8,21 +8,52 @@
 #include <sstream>
 #include <stdexcept>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 namespace tg {
 namespace fs = std::filesystem;
 
+std::string pathToUtf8(const fs::path& p) {
+#if defined(_WIN32)
+    const std::wstring& w = p.native();
+    if (w.empty()) return "";
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (n <= 1) return "";
+    std::string out(static_cast<std::size_t>(n - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, out.data(), n, nullptr, nullptr);
+    return out;
+#else
+    return p.generic_string();
+#endif
+}
+
+fs::path pathFromUtf8(const std::string& s) {
+#if defined(_WIN32)
+    if (s.empty()) return fs::path();
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    if (n <= 1) return fs::path();
+    std::wstring w(static_cast<std::size_t>(n - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    return fs::path(w);
+#else
+    return fs::path(s);
+#endif
+}
+
 bool fileExists(const std::string& path) {
     std::error_code ec;
-    return fs::is_regular_file(path, ec);
+    return fs::is_regular_file(pathFromUtf8(path), ec);
 }
 
 bool dirExists(const std::string& path) {
     std::error_code ec;
-    return fs::is_directory(path, ec);
+    return fs::is_directory(pathFromUtf8(path), ec);
 }
 
 std::string readFile(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
+    std::ifstream in(pathFromUtf8(path), std::ios::binary);
     if (!in) throw std::runtime_error("cannot open file for reading: " + path);
     std::ostringstream ss;
     ss << in.rdbuf();
@@ -31,7 +62,7 @@ std::string readFile(const std::string& path) {
 }
 
 bool writeFile(const std::string& path, const std::string& data) {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    std::ofstream out(pathFromUtf8(path), std::ios::binary | std::ios::trunc);
     if (!out) return false;
     out.write(data.data(), static_cast<std::streamsize>(data.size()));
     out.close();
@@ -64,7 +95,7 @@ std::string toHex16(uint64_t v) {
 
 uint64_t fileSize(const std::string& path) {
     std::error_code ec;
-    uint64_t n = fs::file_size(path, ec);
+    uint64_t n = fs::file_size(pathFromUtf8(path), ec);
     return ec ? 0 : n;
 }
 
@@ -83,7 +114,7 @@ std::string utcNowIso() {
 }
 
 long countFileLines(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
+    std::ifstream in(pathFromUtf8(path), std::ios::binary);
     if (!in) return -1;
     long lines = 0;
     bool any = false;
@@ -106,7 +137,7 @@ bool ensureParentDir(const std::string& path) {
     std::string::size_type sep = path.find_last_of("/\\");
     if (sep == std::string::npos) return true;
     std::error_code ec;
-    fs::create_directories(path.substr(0, sep), ec);
+    fs::create_directories(pathFromUtf8(path.substr(0, sep)), ec);
     return !ec;
 }
 

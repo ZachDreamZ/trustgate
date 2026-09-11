@@ -2,6 +2,8 @@
 
 #include <filesystem>
 
+#include "core/fsutil.h"
+
 #if defined(_WIN32)
 #include <windows.h>
 #else
@@ -23,7 +25,7 @@ MappedFile::~MappedFile() {
 
 bool MappedFile::map(const std::string& path) {
     unmap();
-    std::wstring w = std::filesystem::path(path).wstring();
+    std::wstring w = pathFromUtf8(path).native();
     HANDLE h = CreateFileW(w.c_str(), GENERIC_READ,
                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);

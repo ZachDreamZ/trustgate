@@ -2,6 +2,8 @@
 
 #include <array>
 #include <cstdio>
+
+#include "core/fsutil.h"
 #include <fstream>
 
 #if defined(_WIN32)
@@ -75,7 +77,7 @@ ProcResult runCaptureToFile(const std::string& command, const std::string& logPa
     std::string full = command + " 2>&1";
     FILE* pipe = TG_POPEN(full.c_str(), TG_READMODE);
     if (pipe == nullptr) return r;
-    std::ofstream log(logPath, std::ios::binary | std::ios::trunc);
+    std::ofstream log(pathFromUtf8(logPath), std::ios::binary | std::ios::trunc);
     if (!log) {
         // Unwritable log: drain so the child still finishes, then report.
         std::array<char, 65536> drain{};

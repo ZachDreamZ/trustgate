@@ -2,12 +2,27 @@
 
 // File IO + hashing utilities. v0.1 uses FNV-1a-64 (fast, stdlib-only).
 // Upgrade path (no API change for callers of fileIdentity): BLAKE3.
+//
+// PATH ENCODING: all narrow-string paths are UTF-8. On Windows the Win32
+// narrow filesystem API uses the ANSI codepage (and narrow path::string()
+// conversions can fast-fail the process on unrepresentable characters), so
+// every function below converts via pathFromUtf8() and every iterated path
+// leaves via pathToUtf8(). CLI argv on Windows arrives ANSI-decoded, so
+// explicit non-ASCII --path arguments may not resolve (in-tree Unicode
+// names discovered by walking always work).
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 namespace tg {
+namespace fs = std::filesystem;
+
+// Native path -> UTF-8 narrow (lossless except lone surrogates -> U+FFFD).
+std::string pathToUtf8(const fs::path& p);
+// UTF-8 narrow -> native path (invalid UTF-8 -> empty path, never throws).
+fs::path pathFromUtf8(const std::string& s);
 
 bool fileExists(const std::string& path);
 bool dirExists(const std::string& path);

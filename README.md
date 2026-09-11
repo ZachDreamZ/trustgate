@@ -83,6 +83,10 @@ tg wrap --out claims.json --log run.log [--id ID] [--text TEXT] -- <command> [ar
 Exit codes: `0` pass (or warn-only), `2` DENY / eval FAIL / INVALID signature,
 `4` fingerprint drift, `1` usage/IO error, `3` not implemented.
 
+Windows note: in-tree Unicode filenames are handled as UTF-8 end to end
+(walk, hash, cite, verify). Non-ASCII CLI *arguments* depend on console
+encoding — prefer ASCII paths for `--path`/`--repo` when scripting.
+
 ### claims.json
 
 ```json

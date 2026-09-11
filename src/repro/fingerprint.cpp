@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <sstream>
@@ -145,7 +146,7 @@ bool saveHashCache(const std::string& path, const CacheMap& cache) {
     std::string tmp = path + ".tmp";
     if (!writeFile(tmp, toJson(root))) return false;
     std::error_code ec;
-    fs::rename(tmp, path, ec);
+    fs::rename(pathFromUtf8(tmp), pathFromUtf8(path), ec);
     return !ec;
 }
 
@@ -184,7 +185,7 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
                 continue;
             }
             const fs::path& p = it->path();
-            std::string name = p.filename().generic_string();
+            std::string name = pathToUtf8(p.filename());
             if (it->is_directory(ec)) {
                 if (!ec && isIgnoredDir(name)) it.disable_recursion_pending();
                 continue;
@@ -207,8 +208,8 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
                 continue;
             }
             Target t;
-            t.rel = rel.generic_string();
-            t.full = p.generic_string();
+            t.rel = pathToUtf8(rel);
+            t.full = pathToUtf8(p);
             std::error_code szEc, tmEc;
             t.size = it->file_size(szEc);
             if (szEc) t.size = 0;
