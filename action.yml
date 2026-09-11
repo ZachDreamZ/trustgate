@@ -27,6 +27,12 @@ inputs:
     description: Git ref of ZachDreamZ/trustgate to build when source-dir is empty.
     required: false
     default: main
+  tool-repo:
+    description: >-
+      Owner/repo hosting the releases used by release-tag
+      (github.action_repository is empty for local actions, so this is explicit).
+    required: false
+    default: ZachDreamZ/trustgate
   release-tag:
     description: >-
       Download a prebuilt tg from this GitHub release tag instead of building
@@ -124,9 +130,11 @@ runs:
       shell: bash
       env:
         TG_RELEASE_TAG: ${{ inputs.release-tag }}
+        TG_TOOL_REPO: ${{ inputs.tool-repo }}
       run: |
         if [ "$RUNNER_OS" = "Windows" ]; then ASSET="tg-windows-x64.zip"; else ASSET="tg-linux-x64.tar.gz"; fi
-        URL="https://github.com/${{ github.action_repository }}/releases/download/$TG_RELEASE_TAG/$ASSET"
+        URL="https://github.com/$TG_TOOL_REPO/releases/download/$TG_RELEASE_TAG/$ASSET"
+        echo "downloading $URL"
         DEST="$RUNNER_TEMP/tg-rel"
         rm -rf "$DEST" && mkdir -p "$DEST/x"
         curl -sSL --fail -o "$DEST/pkg" "$URL"
