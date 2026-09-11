@@ -114,6 +114,12 @@ schemas/policy.schema.json   policy JSON Schema (draft-07)
   store (replacing JSONL), libgit2 diff (replacing `git` shell-out),
   tree-sitter symbol refs, GoogleTest unit suite.
 
+## Benchmarks
+
+See [BENCHMARKS.md](BENCHMARKS.md) for methodology and latest numbers
+(MSVC Release, Windows). Reproduce with
+`python bench/bench.py --tg build/Release/tg.exe`.
+
 ## Contributing
 
 Keep it stdlib-only until v1.0. Every new check needs a `tests/smoke.py`

@@ -270,11 +270,13 @@ int cmdGate(const std::vector<std::string>& args) {
 }
 
 int cmdFingerprint(const std::vector<std::string>& args) {
-    ParsedArgs p = parseFlags(args, {"help"});
+    ParsedArgs p = parseFlags(args, {"help", "no-probe"});
     if (optBool(p, "help")) {
         std::cout << "Usage:\n"
                      "  tg fingerprint [--path DIR] [--out repro.json] [--env NAME ...]\n"
-                     "  tg fingerprint --compare old.json new.json [--out diff.json]\n";
+                     "                   [--no-probe]\n"
+                     "  tg fingerprint --compare old.json new.json [--out diff.json]\n"
+                     "NOTE: --no-probe skips toolchain probes (faster) but changes the ID.\n";
         return 0;
     }
     std::string compareA = optOnce(p, "compare", "");
@@ -329,6 +331,7 @@ int cmdFingerprint(const std::vector<std::string>& args) {
     FingerprintOptions fopts;
     fopts.root = optOnce(p, "path", ".");
     fopts.envNames = optAll(p, "env");
+    fopts.probeToolchain = !optBool(p, "no-probe");
     std::string outPath = optOnce(p, "out", "repro.json");
     // TrustGate's own outputs must not perturb the fingerprint when --out
     // lands inside the scanned tree (keeps back-to-back runs stable).

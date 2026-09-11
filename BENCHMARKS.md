@@ -1,0 +1,43 @@
+# TrustGate benchmarks
+
+Method: `python bench/bench.py --tg <tg-binary> [--work DIR]`
+(`--work` defaults to a fresh tmpdir; reuse a dir only with a new path —
+the script does not overwrite existing fixture trees.)
+
+Machine (all numbers below): Windows 11, MSVC 19.44 Release build,
+NVMe SSD, Windows Defender default settings.
+
+## v0.1.1-dev: portable thread-pool hashing (`std::thread`, no TBB)
+
+| Benchmark | Result | Notes |
+|---|---|---|
+| `ctest` suite (29 checks) | 100% pass, ~1.9 s | |
+| Binary size | 261 KB | stdlib-only, dynamic CRT |
+| Fingerprint, 5,000 files / 10.5 MB, warm | **505 ms** | was 767 ms single-threaded (1.5×) |
+| Fingerprint, 5,000 files, cold (freshly written) | **2.6 s** | was 20.1 s; first-touch AV/FS tax, overlapped by parallel reads |
+| Fingerprint, 46 files | 216 ms cold / 82 ms warm | dominated by 2× `cmd.exe` probe spawns; `--no-probe` skips them (different ID — documented) |
+| Fingerprint, 23 files (this repo's `src/`) | 94 ms | |
+| Gate, 200 / 2,000 claims+tests | 116 ms / 916 ms (~0.5 ms/claim) | unchanged (gate is not hashed in parallel) |
+| Process spawn (`tg --version`) | 23 ms | |
+| Stability | same tree → same ID across runs, sessions **and** the single→multi-thread change (`01dc5295…`, `06d6a015…` reproduced exactly) | order-independent combine verified |
+
+## v0.1.0 baseline (single-threaded hashing)
+
+| Benchmark | Result |
+|---|---|
+| Fingerprint, 5,000 files / 10.5 MB, warm | 767 ms |
+| Fingerprint, 5,000 files, cold | 20.1 s |
+| Fingerprint, 46 files | 264 ms cold / 82 ms warm |
+| Gate, 200 / 2,000 claims | 118 ms / 927 ms |
+
+## Reading the cold numbers honestly
+
+On the cold run `user+sys` CPU time was ~0.03 s while wall time was seconds:
+the bottleneck is Windows Defender / filesystem first-touch scanning of new
+files, not hashing. Warm runs measure TrustGate itself. The thread pool still
+helps cold runs (7.7×) by overlapping scan latency across cores.
+
+Threading kicks in at ≥64 files (below that, single-threaded to avoid
+pool overhead), capped at 16 workers. Directory walk stays single-threaded;
+only file reads+hashes parallelize, and results combine in sorted order so
+IDs are deterministic.

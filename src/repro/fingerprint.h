@@ -35,6 +35,9 @@ struct FingerprintOptions {
     std::vector<std::string> envNames;
     // Exact basenames excluded (e.g. the --out file when it lives in root).
     std::vector<std::string> excludeFilenames;
+    // Probe git/cmake versions into toolchain (costs ~2 process spawns).
+    // Note: disabling changes the fingerprint ID (toolchain section empties).
+    bool probeToolchain = true;
 };
 
 struct FingerprintResult {

@@ -1,9 +1,11 @@
 #include "repro/fingerprint.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <stdexcept>
+#include <thread>
 
 #include "core/fsutil.h"
 #include "core/proc.h"
@@ -70,6 +72,7 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
     fp.os = osName();
     fp.created = utcNowIso();
 
+    std::vector<std::pair<std::string, std::string>> targets;  // (rel, full)
     std::error_code ec;
     fs::path rootPath(opts.root);
     if (!fs::exists(rootPath, ec)) {
@@ -107,29 +110,67 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
                 ++result.skipped;
                 continue;
             }
-            FileEntry e;
-            e.path = rel.generic_string();
-            try {
-                std::string data = readFile(p.generic_string());
-                e.size = static_cast<uint64_t>(data.size());
-                e.hash = fnv1a64(data);
-            } catch (...) {
-                ++result.skipped;
-                continue;
-            }
-            fp.files.push_back(e);
+            targets.emplace_back(rel.generic_string(), p.generic_string());
         }
     }
-    std::sort(fp.files.begin(), fp.files.end(),
-              [](const FileEntry& a, const FileEntry& b) { return a.path < b.path; });
+    std::sort(targets.begin(), targets.end(),
+              [](const std::pair<std::string, std::string>& a,
+                 const std::pair<std::string, std::string>& b) { return a.first < b.first; });
+
+    // Hash contents with a portable std::thread pool (no TBB needed for
+    // <execution> policies, so Linux CI stays dependency-free).
+    // Order-independent: each file hashes alone; results land by index,
+    // and the ID mixes them in sorted order afterwards.
+    std::vector<FileEntry> hashed(targets.size());
+    std::vector<char> ready(targets.size(), 0);
+    std::atomic<std::size_t> next{0};
+    std::atomic<int> skippedCount{result.skipped};
+    unsigned hw = std::thread::hardware_concurrency();
+    unsigned workers = 1;
+    if (targets.size() >= 64) {
+        workers = (hw == 0) ? 4 : hw;
+        if (workers < 2) workers = 2;
+        if (workers > 16) workers = 16;
+        if (workers > static_cast<unsigned>(targets.size())) {
+            workers = static_cast<unsigned>(targets.size());
+        }
+    }
+    auto hashWorker = [&]() {
+        while (true) {
+            std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
+            if (i >= targets.size()) break;
+            try {
+                std::string data = readFile(targets[i].second);
+                hashed[i].path = targets[i].first;
+                hashed[i].size = static_cast<uint64_t>(data.size());
+                hashed[i].hash = fnv1a64(data);
+                ready[i] = 1;
+            } catch (...) {
+                skippedCount.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    };
+    if (workers == 1) {
+        hashWorker();
+    } else {
+        std::vector<std::thread> pool;
+        for (unsigned w = 0; w < workers; ++w) pool.emplace_back(hashWorker);
+        for (std::thread& t : pool) t.join();
+    }
+    for (std::size_t i = 0; i < hashed.size(); ++i) {
+        if (ready[i]) fp.files.push_back(hashed[i]);
+    }
+    result.skipped = skippedCount.load();
 
     // Toolchain probes: best effort, never fail the fingerprint.
-    std::string git = probeFirstLine("git --version");
-    if (!git.empty()) fp.toolchain["git"] = git;
-    std::string cmake = probeFirstLine("cmake --version");
-    if (!cmake.empty()) {
-        std::string::size_type nl = cmake.find_first_of("\r\n");
-        fp.toolchain["cmake"] = (nl == std::string::npos) ? cmake : cmake.substr(0, nl);
+    if (opts.probeToolchain) {
+        std::string git = probeFirstLine("git --version");
+        if (!git.empty()) fp.toolchain["git"] = git;
+        std::string cmake = probeFirstLine("cmake --version");
+        if (!cmake.empty()) {
+            std::string::size_type nl = cmake.find_first_of("\r\n");
+            fp.toolchain["cmake"] = (nl == std::string::npos) ? cmake : cmake.substr(0, nl);
+        }
     }
 
     for (const std::string& name : opts.envNames) {
