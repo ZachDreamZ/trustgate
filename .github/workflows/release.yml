@@ -7,11 +7,11 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
-
 jobs:
   build:
+    # Least privilege: checkout needs read, asset upload needs write.
+    permissions:
+      contents: write
     strategy:
       matrix:
         include:
