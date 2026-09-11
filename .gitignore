@@ -21,6 +21,8 @@ verdict.json
 quarantine.yml
 *.sarif
 junit.xml
+eval-results.json
+.trustgate/eval-history.jsonl
 
 # IDE / OS
 .vs/

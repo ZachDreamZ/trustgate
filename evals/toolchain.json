@@ -1,0 +1,10 @@
+{
+  "name": "toolchain-present",
+  "description": "CMake is available and reports its version (needed to build this repo).",
+  "run": "cmake --version",
+  "asserts": [
+    {"type": "exit_code", "expected": 0},
+    {"type": "match", "pattern": "cmake version", "present": true},
+    {"type": "max_ms", "value": 30000}
+  ]
+}

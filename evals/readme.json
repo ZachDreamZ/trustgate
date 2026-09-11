@@ -1,0 +1,9 @@
+{
+  "name": "readme-describes-tool",
+  "description": "README stays on-message about what TrustGate is.",
+  "asserts": [
+    {"type": "file_exists", "path": "README.md"},
+    {"type": "match", "file": "README.md", "pattern": "TrustGate", "present": true},
+    {"type": "match", "file": "README.md", "pattern": "Code never leaves your machine", "present": true}
+  ]
+}

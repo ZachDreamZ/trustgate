@@ -1,0 +1,12 @@
+{
+  "name": "policy-enforces-tests",
+  "description": "Shipped starter policy requires test citations (the project's thesis).",
+  "asserts": [
+    {
+      "type": "json_field",
+      "file": ".trustgate/policy.json",
+      "field": "require_test_citation",
+      "equals": true
+    }
+  ]
+}

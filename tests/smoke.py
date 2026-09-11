@@ -83,6 +83,7 @@ def main():
     args = ap.parse_args()
     tg = args.tg
     check("binary exists", os.path.isfile(tg), tg)
+    tg = os.path.abspath(tg)  # run-commands below execute with various cwds
 
     tmp = tempfile.mkdtemp(prefix="tg-smoke-")
     repo = os.path.join(tmp, "repo")
@@ -292,8 +293,52 @@ def main():
     check("version exit 0", p.returncode == 0 and "tg " in p.stdout, p.stdout)
     p = run(tg, "nope", cwd=tmp)
     check("unknown command exit 1", p.returncode == 1, f"got {p.returncode}")
-    p = run(tg, "eval", cwd=tmp)
+    p = run(tg, "wrap", cwd=tmp)
     check("roadmap stub exit 3", p.returncode == 3, f"got {p.returncode}")
+    p = run(tg, "eval", cwd=tmp)
+    check("eval missing dir exit 1", p.returncode == 1, f"got {p.returncode}")
+
+    # --- 11. eval: deterministic scenarios ---
+    evdir = os.path.join(tmp, "evals")
+    os.makedirs(os.path.join(evdir, "cases"))
+    write(os.path.join(evdir, "a.txt"), "hello world\n")
+    write(os.path.join(evdir, "data.json"), json.dumps({"verdict": "PASS", "n": 3}))
+    tgq = f'"{tg}" --version'
+    write(os.path.join(evdir, "cases", "pass.json"), json.dumps({
+        "name": "pass-all",
+        "run": tgq,
+        "asserts": [
+            {"type": "exit_code", "expected": 0},
+            {"type": "match", "pattern": "tg "},
+            {"type": "match", "file": "a.txt", "pattern": "world"},
+            {"type": "match", "file": "a.txt", "pattern": "zzz", "present": False},
+            {"type": "match", "file": "a.txt", "pattern": "h.llo", "regex": True},
+            {"type": "file_exists", "path": "data.json"},
+            {"type": "json_field", "file": "data.json", "field": "verdict", "equals": "PASS"},
+            {"type": "max_ms", "value": 60000},
+        ],
+    }))
+    write(os.path.join(evdir, "cases", "fail.json"), json.dumps({
+        "name": "fail-exit",
+        "run": tgq,
+        "asserts": [{"type": "exit_code", "expected": 7}],
+    }))
+    p = run(tg, "eval", "--dir", "cases", "--repo", ".", "--out", "r1.json",
+            "--history", "h.jsonl", cwd=evdir)
+    check("eval mixed exit 2", p.returncode == 2, f"got {p.returncode}: {p.stdout}")
+    r1 = json.load(open(os.path.join(evdir, "r1.json"), encoding="utf-8"))
+    by_name = {r["name"]: r for r in r1.get("results", [])}
+    check("eval pass-all passed", by_name.get("pass-all", {}).get("passed") is True,
+          str(by_name.get("pass-all")))
+    check("eval fail-exit failed", by_name.get("fail-exit", {}).get("passed") is False,
+          str(by_name.get("fail-exit")))
+    p = run(tg, "eval", "--dir", "cases", "--repo", ".", "--out", "r2.json",
+            "--history", "h.jsonl", "--filter", "pass-all", cwd=evdir)
+    check("eval --filter exit 0", p.returncode == 0, f"got {p.returncode}: {p.stdout}")
+    p = run(tg, "eval", "--trend", "--history", os.path.join(evdir, "h.jsonl"), cwd=tmp)
+    check("eval --trend exit 0", p.returncode == 0, p.stderr)
+    check("trend names both evals",
+          "pass-all" in p.stdout and "fail-exit" in p.stdout, p.stdout[:300])
 
     print(f"\n{len(FAILURES)} failures in {tmp}")
     return 1 if FAILURES else 0

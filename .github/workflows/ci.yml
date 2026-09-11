@@ -71,6 +71,15 @@ jobs:
             verdict.json
             trustgate.sarif
             junit.xml
+            eval-results.json
+
+      # Dogfood EvalOps: the repo's own eval scenarios gate the build too.
+      - name: Dogfood evals
+        shell: bash
+        run: |
+          BIN="build/tg"
+          if [ ! -f "$BIN" ] && [ -f "$BIN.exe" ]; then BIN="$BIN.exe"; fi
+          "$BIN" eval --dir evals --repo . --out eval-results.json
 
       - name: Upload SARIF
         if: always()

@@ -1,13 +1,17 @@
 #include "cli/commands.h"
 
 #include <cstdlib>
+#include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <sstream>
+#include <tuple>
 
 #include "core/fsutil.h"
 #include "core/json.h"
+#include "eval/eval.h"
 #include "evidence/claims.h"
 #include "evidence/policy.h"
 #include "evidence/sarif.h"
@@ -111,7 +115,8 @@ void printTopHelp() {
         << "  gate          verify AI claims against files/tests/artifacts\n"
         << "  fingerprint   hash a directory tree into a stable repro ID\n"
         << "  flake         score JUnit history, emit quarantine.yml\n"
-        << "  wrap|eval|sign  v1.0 roadmap (not implemented yet)\n"
+        << "  eval          run deterministic eval scenarios (evals/*.json)\n"
+        << "  wrap|sign     v1.0 roadmap (not implemented yet)\n"
         << "\n"
         << "Exit codes: 0 pass, 2 DENY/drift, 1 usage or IO error, 3 not implemented.\n"
         << "Run `tg <command> --help` for command options.\n";
@@ -431,6 +436,217 @@ int cmdFlake(const std::vector<std::string>& args) {
                   << " cause=" << e.category << " (" << e.confidence << ")\n";
     }
     return 0;
+}
+
+namespace {
+
+void appendEvalHistory(const std::string& path, const std::string& name, bool pass,
+                       long long ms) {
+    ensureParentDir(path);
+    std::ofstream out(path, std::ios::app);
+    if (!out) return;  // history is best effort; results file is authoritative
+    JsonValue line = JsonValue::makeObject();
+    line.object["ts"] = JsonValue::makeString(utcNowIso());
+    line.object["name"] = JsonValue::makeString(name);
+    line.object["pass"] = JsonValue::makeBool(pass);
+    line.object["ms"] = JsonValue::makeNumber(static_cast<double>(ms));
+    out << toJson(line) << "\n";
+}
+
+int cmdEvalTrend(const std::string& historyPath, int lastN) {
+    std::string text;
+    try {
+        text = readFile(historyPath);
+    } catch (const std::exception&) {
+        std::cerr << "no history yet: " << historyPath << " (run `tg eval` first)\n";
+        return 1;
+    }
+    std::map<std::string, std::vector<std::tuple<std::string, bool, long long>>> runs;
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.find_first_not_of(" \t\r\n") == std::string::npos) continue;
+        try {
+            JsonValue r = parseJson(line);
+            if (!r.isObject()) continue;
+            std::string name = r.getString("name", "");
+            if (name.empty()) continue;
+            runs[name].push_back(std::make_tuple(r.getString("ts", ""),
+                                                 r.getBool("pass", false),
+                                                 static_cast<long long>(r.getNumber("ms", 0.0))));
+        } catch (...) {
+            continue;  // skip corrupt lines
+        }
+    }
+    if (runs.empty()) {
+        std::cerr << "no eval history in " << historyPath << "\n";
+        return 1;
+    }
+    for (const auto& kv : runs) {
+        const auto& v = kv.second;
+        std::size_t from = v.size() > static_cast<std::size_t>(lastN) ? v.size() - lastN : 0;
+        int ok = 0;
+        long long tot = 0;
+        for (std::size_t i = from; i < v.size(); ++i) {
+            if (std::get<1>(v[i])) ++ok;
+            tot += std::get<2>(v[i]);
+        }
+        long long n = static_cast<long long>(v.size() - from);
+        std::cout << kv.first << ": " << ok << "/" << n << " passed, last "
+                  << (std::get<1>(v.back()) ? "PASS" : "FAIL") << " " << std::get<0>(v.back())
+                  << ", avg " << (n > 0 ? tot / n : 0) << "ms\n";
+    }
+    return 0;
+}
+
+}  // namespace
+
+int cmdEval(const std::vector<std::string>& args) {
+    ParsedArgs p = parseFlags(args, {"help"});
+    if (optBool(p, "help")) {
+        std::cout << "Usage:\n"
+                     "  tg eval [--dir evals] [--repo .] [--out eval-results.json]\n"
+                     "          [--history .trustgate/eval-history.jsonl] [--filter SUBSTR]\n"
+                     "  tg eval --trend [--history ...] [--last N]\n"
+                     "Exit codes: 0 all pass, 2 any failure, 1 usage or IO error.\n";
+        return 0;
+    }
+    std::string historyPath = optOnce(p, "history", ".trustgate/eval-history.jsonl");
+    if (p.opts.find("trend") != p.opts.end()) {
+        int lastN = 10;
+        std::string nstr = optOnce(p, "trend", "");
+        if (nstr.empty()) nstr = optOnce(p, "last", "");
+        if (!nstr.empty()) {
+            try {
+                lastN = std::stoi(nstr);
+            } catch (...) {
+                std::cerr << "invalid trend window: " + nstr + "\n";
+                return 1;
+            }
+            if (lastN <= 0) lastN = 10;
+        }
+        return cmdEvalTrend(historyPath, lastN);
+    }
+    std::string dir = optOnce(p, "dir", "evals");
+    std::string repo = optOnce(p, "repo", ".");
+    std::string outPath = optOnce(p, "out", "eval-results.json");
+    std::string filter = optOnce(p, "filter", "");
+
+    if (!dirExists(dir)) {
+        std::cerr << "eval dir not found: " + dir + "\n";
+        return 1;
+    }
+    std::vector<std::string> files;
+    {
+        std::error_code ec;
+        fs::directory_iterator it(dir, ec);
+        fs::directory_iterator end;
+        for (; !ec && it != end; it.increment(ec)) {
+            if (ec) break;
+            if (!it->is_regular_file(ec) || ec) continue;
+            std::string name = it->path().filename().generic_string();
+            if (name.size() >= 5 && name.compare(name.size() - 5, 5, ".json") == 0) {
+                files.push_back(it->path().generic_string());
+            }
+        }
+        if (ec) {
+            std::cerr << "cannot list eval dir: " + dir + "\n";
+            return 1;
+        }
+    }
+    std::sort(files.begin(), files.end());
+
+    struct Loaded {
+        std::string path;
+        EvalCase evalCase;
+        bool loadOk = false;
+        std::string loadErr;
+    };
+    std::vector<Loaded> loaded;
+    for (const std::string& f : files) {
+        Loaded l;
+        l.path = f;
+        try {
+            l.evalCase = loadEvalFile(f);
+            l.loadOk = true;
+        } catch (const std::exception& ex) {
+            l.loadErr = ex.what();
+        }
+        if (!filter.empty() && f.find(filter) == std::string::npos &&
+            (!l.loadOk || l.evalCase.name.find(filter) == std::string::npos)) {
+            continue;
+        }
+        loaded.push_back(l);
+    }
+    if (loaded.empty()) {
+        std::cerr << "no evals matched" + (filter.empty() ? std::string("") : " filter '" + filter + "'") +
+                         " in " + dir + "\n";
+        return 1;
+    }
+
+    JsonValue root = JsonValue::makeObject();
+    root.object["tool"] = JsonValue::makeString("trustgate");
+    root.object["version"] = JsonValue::makeString(kTgVersion);
+    JsonValue results = JsonValue::makeArray();
+    int passed = 0;
+    for (const Loaded& l : loaded) {
+        JsonValue o = JsonValue::makeObject();
+        o.object["file"] = JsonValue::makeString(l.path);
+        bool ok = false;
+        if (!l.loadOk) {
+            o.object["name"] = JsonValue::makeString(l.path);
+            o.object["passed"] = JsonValue::makeBool(false);
+            JsonValue fails = JsonValue::makeArray();
+            JsonValue f = JsonValue::makeObject();
+            f.object["assert"] = JsonValue::makeNumber(-1.0);
+            f.object["message"] = JsonValue::makeString("cannot load eval: " + l.loadErr);
+            fails.array.push_back(f);
+            o.object["failures"] = fails;
+        } else {
+            EvalResult r = runEval(l.evalCase, repo);
+            ok = r.passed;
+            o.object["name"] = JsonValue::makeString(l.evalCase.name);
+            o.object["passed"] = JsonValue::makeBool(r.passed);
+            o.object["ms"] = JsonValue::makeNumber(static_cast<double>(r.ms));
+            JsonValue fails = JsonValue::makeArray();
+            for (const AssertFailure& af : r.failures) {
+                JsonValue f = JsonValue::makeObject();
+                f.object["assert"] = JsonValue::makeNumber(static_cast<double>(af.index));
+                f.object["message"] = JsonValue::makeString(af.message);
+                fails.array.push_back(f);
+            }
+            o.object["failures"] = fails;
+            appendEvalHistory(historyPath, l.evalCase.name, r.passed, r.ms);
+        }
+        if (ok) ++passed;
+        results.array.push_back(o);
+        std::cout << "  [" << (ok ? "PASS" : "FAIL") << "] "
+                  << (l.loadOk ? l.evalCase.name : l.path) << "\n";
+        if (!ok) {
+            const JsonValue& fails = o.at("failures");
+            for (const JsonValue& f : fails.array) {
+                std::cout << "    assert " << f.getNumber("assert", -1.0) << ": "
+                          << f.getString("message", "") << "\n";
+            }
+        }
+    }
+    root.object["results"] = results;
+    JsonValue stats = JsonValue::makeObject();
+    stats.object["evals"] = JsonValue::makeNumber(static_cast<double>(loaded.size()));
+    stats.object["passed"] = JsonValue::makeNumber(static_cast<double>(passed));
+    stats.object["failed"] = JsonValue::makeNumber(static_cast<double>(loaded.size() - passed));
+    root.object["stats"] = stats;
+    bool allOk = (passed == static_cast<int>(loaded.size()));
+    root.object["verdict"] = JsonValue::makeString(allOk ? "PASS" : "FAIL");
+
+    ensureParentDir(outPath);
+    if (!writeFile(outPath, toJson(root, true) + "\n")) {
+        std::cerr << "cannot write results file: " + outPath + "\n";
+        return 1;
+    }
+    std::cout << "eval: " << (allOk ? "PASS" : "FAIL") << " (" << passed << "/"
+              << loaded.size() << " -> " << outPath << ")\n";
+    return allOk ? 0 : 2;
 }
 
 }  // namespace tg
