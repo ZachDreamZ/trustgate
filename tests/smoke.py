@@ -219,33 +219,41 @@ def main():
         str(diff),
     )
 
-    # --- 7. flake history -> quarantine ---
+    # --- 7. flake history -> quarantine with root causes ---
     flake_dir = os.path.join(tmp, "flake")
     os.makedirs(flake_dir)
+    PASS = None
     runs = [
-        ("run1.xml", True, True),
-        ("run2.xml", True, False),
-        ("run3.xml", True, False),
-        ("run4.xml", True, True),
+        ("run1.xml", {"A": PASS, "B": PASS, "C": PASS}),
+        ("run2.xml", {"A": PASS, "B": "Connection refused: localhost:5432",
+                      "C": "AssertionError: expected 200 but got 404"}),
+        ("run3.xml", {"A": PASS, "B": "Connection refused: localhost:5432", "C": PASS}),
+        ("run4.xml", {"A": PASS, "B": PASS, "C": PASS}),
     ]
-    for name, a_ok, b_ok in runs:
-        tag_a = "" if a_ok else '<failure message="x"/>'
-        tag_b = "" if b_ok else '<failure message="x"/>'
-        xml = (
-            '<?xml version="1.0"?><testsuites><testsuite name="s" tests="2">'
-            f'<testcase classname="S" name="A" time="0.01">{tag_a}</testcase>'
-            f'<testcase classname="S" name="B" time="0.01">{tag_b}</testcase>'
-            "</testsuite></testsuites>"
-        )
-        write(os.path.join(flake_dir, name), xml)
+    for name, specs in runs:
+        cases = []
+        for tname, res in specs.items():
+            if res is None:
+                cases.append(f'<testcase classname="S" name="{tname}" time="0.01"/>')
+            else:
+                cases.append(
+                    f'<testcase classname="S" name="{tname}" time="0.01">'
+                    f"<failure message=\"{res}\">{res} at test line 1</failure></testcase>"
+                )
+        write(os.path.join(flake_dir, name),
+              '<?xml version="1.0"?><testsuites><testsuite name="s" tests="3">'
+              + "".join(cases) + "</testsuite></testsuites>")
         p = run(
             tg, "flake", "--junit", name,
             "--history", "hist.jsonl", "--out", "q.yml", cwd=flake_dir,
         )
         check(f"flake {name} exit 0", p.returncode == 0, p.stderr)
     qtext = open(os.path.join(flake_dir, "q.yml"), encoding="utf-8").read()
-    check("flaky B quarantined", "S.B" in qtext, qtext[:300])
-    check("stable A not quarantined", "S.A" not in qtext, qtext[:300])
+    check("flaky B quarantined", "S.B" in qtext, qtext[:400])
+    check("B cause is network", "network" in qtext, qtext[:400])
+    check("flaky C quarantined", "S.C" in qtext, qtext[:400])
+    check("C cause is assertion", "assertion" in qtext, qtext[:400])
+    check("stable A not quarantined", "S.A" not in qtext, qtext[:400])
 
     # --- 8. init + --force guard ---
     initproj = os.path.join(tmp, "initproj")

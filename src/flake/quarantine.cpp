@@ -6,6 +6,7 @@
 
 #include "core/fsutil.h"
 #include "core/json.h"
+#include "flake/category.h"
 
 namespace tg {
 namespace {
@@ -59,6 +60,18 @@ std::vector<QuarantineEntry> parseQuarantineYaml(const std::string& text) {
                 cur.ttlDays = std::atoi(val.c_str());
             } else if (key == "reason") {
                 cur.reason = val;
+            } else if (key == "category") {
+                cur.category = val;
+            } else if (key == "confidence") {
+                cur.confidence = std::strtod(val.c_str(), nullptr);
+            } else if (key == "signals") {
+                cur.signals.clear();
+                std::istringstream parts(val);
+                std::string part;
+                while (std::getline(parts, part, ',')) {
+                    part = trim(part);
+                    if (!part.empty()) cur.signals.push_back(part);
+                }
             }
         }
     }
@@ -81,6 +94,13 @@ std::vector<QuarantineEntry> parseQuarantineJson(const std::string& text) {
         e.runs = static_cast<int>(item.getNumber("runs", 0.0));
         e.ttlDays = static_cast<int>(item.getNumber("ttl_days", 14.0));
         e.reason = item.getString("reason", "");
+        e.category = item.getString("category", "unknown");
+        e.confidence = item.getNumber("confidence", 0.0);
+        if (item.has("signals") && item.at("signals").isArray()) {
+            for (const JsonValue& s : item.at("signals").array) {
+                if (s.isString() && !s.str.empty()) e.signals.push_back(s.str);
+            }
+        }
         out.push_back(e);
     }
     return out;
@@ -90,7 +110,7 @@ std::vector<QuarantineEntry> parseQuarantineJson(const std::string& text) {
 
 std::vector<QuarantineEntry> updateFlakeHistory(
     const std::string& historyPath,
-    const std::vector<std::pair<std::string, char>>& runResults,
+    const std::vector<FlakeSample>& runResults,
     const FlakeOptions& opts,
     std::string& error) {
     error.clear();
@@ -113,9 +133,14 @@ std::vector<QuarantineEntry> updateFlakeHistory(
     JsonValue run = JsonValue::makeObject();
     run.object["ts"] = JsonValue::makeString(utcNowIso());
     JsonValue results = JsonValue::makeObject();
-    for (const auto& kv : runResults) {
-        std::string s(1, kv.second);
-        results.object[kv.first] = JsonValue::makeString(s);
+    for (const FlakeSample& sample : runResults) {
+        JsonValue entry = JsonValue::makeObject();
+        entry.object["s"] = JsonValue::makeString(std::string(1, sample.status));
+        entry.object["t"] = JsonValue::makeNumber(sample.timeMs);
+        if (sample.status == 'F' && !sample.message.empty()) {
+            entry.object["m"] = JsonValue::makeString(sample.message.substr(0, 200));
+        }
+        results.object[sample.id] = entry;
     }
     run.object["results"] = results;
     lines.push_back(toJson(run));
@@ -136,9 +161,12 @@ std::vector<QuarantineEntry> updateFlakeHistory(
         }
     }
 
-    // Score: aggregate pass/fail counts per test over retained runs.
+    // Score: aggregate pass/fail counts per test over retained runs, tracking
+    // the most recent failure evidence for classification. Accepts legacy
+    // history lines whose values are bare "P"/"F"/"S" strings.
     std::map<std::string, int> fails;
     std::map<std::string, int> totals;
+    std::map<std::string, std::string> lastFailMsg;
     for (const std::string& l : lines) {
         try {
             JsonValue r = parseJson(l);
@@ -146,9 +174,21 @@ std::vector<QuarantineEntry> updateFlakeHistory(
             const JsonValue& res = r.at("results");
             if (!res.isObject()) continue;
             for (const auto& kv : res.object) {
-                if (!kv.second.isString()) continue;
+                std::string status;
+                std::string msg;
+                if (kv.second.isString()) {
+                    status = kv.second.str;  // legacy format
+                } else if (kv.second.isObject()) {
+                    status = kv.second.getString("s", "");
+                    msg = kv.second.getString("m", "");
+                } else {
+                    continue;
+                }
                 totals[kv.first]++;
-                if (kv.second.str == "F") fails[kv.first]++;
+                if (status == "F") {
+                    fails[kv.first]++;
+                    if (!msg.empty()) lastFailMsg[kv.first] = msg;
+                }
             }
         } catch (const JsonError&) {
             continue;  // skip corrupt lines
@@ -166,8 +206,12 @@ std::vector<QuarantineEntry> updateFlakeHistory(
         e.runs = n;
         e.flakeRate = static_cast<double>(f) / static_cast<double>(n);
         e.ttlDays = opts.ttlDays;
+        Cause cause = classifyFailure(lastFailMsg[kv.first], e.flakeRate);
+        e.category = cause.category;
+        e.confidence = cause.confidence;
+        e.signals = cause.signals;
         std::ostringstream reason;
-        reason << "flaky: " << f << " failures in last " << n << " runs";
+        reason << "flaky-" << e.category << ": " << f << " failures in last " << n << " runs";
         e.reason = reason.str();
         quarantined.push_back(e);
     }
@@ -189,6 +233,14 @@ void writeQuarantineYaml(const std::string& path,
         out << "    runs: " << e.runs << "\n";
         out << "    ttl_days: " << e.ttlDays << "\n";
         out << "    reason: \"" << e.reason << "\"\n";
+        out << "    category: " << e.category << "\n";
+        out << "    confidence: " << e.confidence << "\n";
+        out << "    signals: \"";
+        for (std::size_t i = 0; i < e.signals.size(); ++i) {
+            if (i > 0) out << ", ";
+            out << e.signals[i];
+        }
+        out << "\"\n";
     }
     writeFile(path, out.str());
 }

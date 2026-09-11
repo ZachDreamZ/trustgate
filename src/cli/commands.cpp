@@ -385,8 +385,9 @@ int cmdFlake(const std::vector<std::string>& args) {
     std::string historyPath = optOnce(p, "history", ".trustgate/flake-history.jsonl");
     std::string outPath = optOnce(p, "out", "quarantine.yml");
 
-    // Merge shards of one run: worst status wins (F > S > P).
-    std::map<std::string, char> merged;
+    // Merge shards of one run: worst status wins (F > S > P), carrying the
+    // winning outcome's failure evidence.
+    std::map<std::string, FlakeSample> merged;
     int total = 0;
     for (const std::string& jp : junitPaths) {
         JUnitReport rep;
@@ -399,14 +400,22 @@ int cmdFlake(const std::vector<std::string>& args) {
         for (const TestCaseResult& tc : rep.cases) {
             auto it = merged.find(tc.id);
             if (it == merged.end()) {
-                merged[tc.id] = tc.status;
-            } else if (tc.status == 'F' || (tc.status == 'S' && it->second == 'P')) {
-                it->second = tc.status;
+                FlakeSample s;
+                s.id = tc.id;
+                s.status = tc.status;
+                s.message = tc.failureText;
+                s.timeMs = tc.timeMs;
+                merged[tc.id] = s;
+            } else if (tc.status == 'F' || (tc.status == 'S' && it->second.status == 'P')) {
+                it->second.status = tc.status;
+                it->second.message = tc.failureText;
+                it->second.timeMs = tc.timeMs;
             }
         }
         total += static_cast<int>(rep.cases.size());
     }
-    std::vector<std::pair<std::string, char>> runResults(merged.begin(), merged.end());
+    std::vector<FlakeSample> runResults;
+    for (const auto& kv : merged) runResults.push_back(kv.second);
     std::vector<QuarantineEntry> quarantined =
         updateFlakeHistory(historyPath, runResults, fopts, error);
     if (!error.empty()) {
@@ -418,7 +427,8 @@ int cmdFlake(const std::vector<std::string>& args) {
     std::cout << "flake: " << total << " tests in run, " << quarantined.size()
               << " quarantined (-> " << outPath << ")\n";
     for (const QuarantineEntry& e : quarantined) {
-        std::cout << "  ~ " << e.id << " rate=" << e.flakeRate << " runs=" << e.runs << "\n";
+        std::cout << "  ~ " << e.id << " rate=" << e.flakeRate << " runs=" << e.runs
+                  << " cause=" << e.category << " (" << e.confidence << ")\n";
     }
     return 0;
 }

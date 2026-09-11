@@ -13,6 +13,9 @@ struct TestCaseResult {
     std::string id;   // "classname.name" or bare "name"
     char status = 'P';  // 'P' passed, 'F' failed/error, 'S' skipped
     double timeMs = 0.0;
+    // message="..." of the first failure/error child plus a collapsed
+    // excerpt of its body (capped); empty unless status == 'F'.
+    std::string failureText;
 };
 
 struct JUnitReport {

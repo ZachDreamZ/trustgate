@@ -43,6 +43,46 @@ bool hasChild(const std::string& inner, const std::string& child) {
     return inner.find("<" + child) != std::string::npos;
 }
 
+// message="..." of the first failure/error child plus a whitespace-collapsed
+// excerpt of its body, capped at 300 chars. Empty when no such child exists.
+std::string extractFailureText(const std::string& inner) {
+    std::string::size_type at = inner.find("<failure");
+    if (at == std::string::npos) at = inner.find("<error");
+    if (at == std::string::npos) return "";
+    std::string::size_type tagEnd = inner.find('>', at);
+    if (tagEnd == std::string::npos) return "";
+    std::string tag = inner.substr(at, tagEnd - at + 1);
+    std::string out = getAttr(tag, "message");
+    if (tagEnd == 0 || inner[tagEnd - 1] != '/') {
+        std::string::size_type close = inner.find("</", tagEnd);
+        std::string body = (close == std::string::npos)
+                               ? inner.substr(tagEnd + 1)
+                               : inner.substr(tagEnd + 1, close - tagEnd - 1);
+        std::string flat;
+        bool space = true;  // collapse runs, trim leading
+        for (char c : body) {
+            bool ws = (c == ' ' || c == '\t' || c == '\n' || c == '\r');
+            if (ws) {
+                if (!space) {
+                    flat.push_back(' ');
+                    space = true;
+                }
+            } else {
+                flat.push_back(c);
+                space = false;
+            }
+        }
+        while (!flat.empty() && flat.back() == ' ') flat.pop_back();
+        if (flat.size() > 300) {
+            flat.resize(300);
+        }
+        if (!out.empty() && !flat.empty()) out += " | ";
+        out += flat;
+    }
+    if (out.size() > 500) out.resize(500);
+    return out;
+}
+
 }  // namespace
 
 JUnitReport parseJUnit(const std::string& xml) {
@@ -84,6 +124,7 @@ JUnitReport parseJUnit(const std::string& xml) {
         if (!timeStr.empty()) tcRes.timeMs = std::strtod(timeStr.c_str(), nullptr) * 1000.0;
         if (hasChild(inner, "failure") || hasChild(inner, "error")) {
             tcRes.status = 'F';
+            tcRes.failureText = extractFailureText(inner);
             ++report.failed;
         } else if (hasChild(inner, "skipped")) {
             tcRes.status = 'S';
