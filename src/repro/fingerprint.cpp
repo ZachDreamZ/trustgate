@@ -74,8 +74,8 @@ unsigned long long parseHex64(const std::string& s) {
 namespace {
 
 // Hash-cache helpers. Entries are keyed by relative path; a hit requires an
-// exact (size, mtime) match, mtime in 100ns ticks stored as a decimal string
-// (JSON doubles cannot hold 64-bit timestamps exactly).
+// exact (size, mtime-ticks) match, mtime stored as a decimal string (JSON
+// doubles cannot hold 64-bit timestamps exactly; values may be negative).
 // Corrupt/version-mismatched caches start fresh; cache I/O never fails a run.
 
 const char* kCacheAlgo = "fnv1a64-1";
@@ -96,14 +96,14 @@ CacheMap loadHashCache(const std::string& path) {
         for (const auto& kv : entries.object) {
             if (!kv.second.isObject()) continue;
             double sizeNum = kv.second.getNumber("size", -1.0);
-            std::string mtimeStr = kv.second.getString("mtime_100ns", "");
+            std::string mtimeStr = kv.second.getString("mtime_ticks", "");
             std::string hex = kv.second.getString("hash", "");
             if (sizeNum < 0.0 || sizeNum > 9.0e15 || mtimeStr.empty() || hex.size() != 16) {
                 continue;
             }
             char* end = nullptr;
             long long mtime = std::strtoll(mtimeStr.c_str(), &end, 10);
-            if (end == nullptr || *end != '\0' || mtime < 0) continue;
+            if (end == nullptr || *end != '\0') continue;
             uint64_t h = 0;
             bool bad = false;
             for (char c : hex) {
@@ -136,7 +136,7 @@ bool saveHashCache(const std::string& path, const CacheMap& cache) {
     for (const auto& kv : cache) {
         JsonValue e = JsonValue::makeObject();
         e.object["size"] = JsonValue::makeNumber(static_cast<double>(std::get<0>(kv.second)));
-        e.object["mtime_100ns"] = JsonValue::makeString(std::to_string(std::get<1>(kv.second)));
+        e.object["mtime_ticks"] = JsonValue::makeString(std::to_string(std::get<1>(kv.second)));
         e.object["hash"] = JsonValue::makeString(toHex16(std::get<2>(kv.second)));
         entries.object[kv.first] = e;
     }
@@ -161,7 +161,12 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
         std::string rel;   // relative, '/' separators
         std::string full;  // absolute-ish path for reading
         uint64_t size = 0;
-        long long mtimeNs = -1;  // 100ns ticks; -1 = stat failed, never cached
+        // Opaque file_clock ticks. The epoch is implementation-defined and
+        // the value may even be negative (observed with libstdc++
+        // file_clock); only equality across runs matters, so stat success
+        // is tracked separately instead of overloading a sentinel value.
+        long long mtimeTicks = 0;
+        bool haveStat = false;
     };
     std::vector<Target> targets;
     std::error_code ec;
@@ -209,12 +214,15 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
             if (szEc) t.size = 0;
             auto ft = it->last_write_time(tmEc);
             if (!tmEc) {
-                // 100ns ticks: lossless on Windows (FILETIME-native) and fits
-                // int64 (raw nanoseconds since 1601 would overflow int64).
+                // Coarsen to 100ns ticks: lossless on Windows (FILETIME
+                // native) and keeps values small everywhere else. The raw
+                // file_clock epoch is implementation-defined, so the result
+                // is treated as opaque (see Target).
                 using ticks100ns =
                     std::chrono::duration<long long, std::ratio<1, 10000000>>;
-                t.mtimeNs = std::chrono::duration_cast<ticks100ns>(ft.time_since_epoch())
-                                .count();
+                t.mtimeTicks = std::chrono::duration_cast<ticks100ns>(ft.time_since_epoch())
+                                   .count();
+                t.haveStat = true;
             }
             targets.push_back(t);
         }
@@ -256,10 +264,10 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
             std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
             if (i >= targets.size()) break;
             const Target& t = targets[i];
-            if (t.mtimeNs >= 0) {
+            if (t.haveStat) {
                 auto cit = cache.find(t.rel);
                 if (cit != cache.end() && std::get<0>(cit->second) == t.size &&
-                    std::get<1>(cit->second) == t.mtimeNs) {
+                    std::get<1>(cit->second) == t.mtimeTicks) {
                     hashed[i].path = t.rel;
                     hashed[i].size = t.size;
                     hashed[i].hash = std::get<2>(cit->second);
@@ -303,9 +311,9 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
         // Refresh: current results overwrite stale entries; deleted files drop.
         CacheMap fresh;
         for (std::size_t i = 0; i < hashed.size(); ++i) {
-            if (ready[i] && targets[i].mtimeNs >= 0) {
+            if (ready[i] && targets[i].haveStat) {
                 fresh[targets[i].rel] =
-                    std::make_tuple(hashed[i].size, targets[i].mtimeNs, hashed[i].hash);
+                    std::make_tuple(hashed[i].size, targets[i].mtimeTicks, hashed[i].hash);
             }
         }
         if (!saveHashCache(opts.cachePath, fresh)) {

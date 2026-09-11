@@ -17,14 +17,19 @@ NVMe SSD, Windows Defender default settings.
 | Fingerprint, 5,001 small files, cached rerun | 0.55 s | ≈ wash vs 0.51 s uncached warm — see honesty note |
 | Fingerprint, 5,000 files, uncached warm | 0.51 s | mmap+threads (was 0.77 s) |
 
-Honesty note: the cache stores size+mtime(100ns ticks)+hash per path and
+Honesty note: the cache stores size+mtime-ticks+hash per path and
 skips I/O on exact hits. On warm small-file trees the cache's own JSON
 round-trip costs about as much as re-hashing, so it breaks even there; it
 wins big whenever hashing dominates (large files: 11.7×) or reads are cold
 (skips AV-taxed first-touch reads). Corrupt/version-mismatched caches start
-fresh and never fail a run. Fixed en route: a real int64-overflow bug where
-Windows `file_clock` nanoseconds-since-1601 exceeded `LLONG_MAX` and silently
-disabled the cache — now 100ns ticks, caught by the new smoke assertions.
+fresh and never fail a run. Fixed en route, twice: (1) a real int64-overflow
+bug where Windows `file_clock` nanoseconds-since-1601 exceeded `LLONG_MAX`
+and silently disabled the cache; (2) a wrong `mtime >= 0` assumption —
+libstdc++ `file_clock` values are legitimately negative (epoch is
+implementation-defined), so stat success is now tracked with an explicit
+flag instead of a sentinel. Both were caught by the new smoke assertions,
+and the second was root-caused by reproducing the exact CI failure in WSL
+with a GCC build.
 
 ## v0.1.1-dev: portable thread-pool hashing (`std::thread`, no TBB)
 
