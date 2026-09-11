@@ -42,6 +42,20 @@ def write(path, text):
         fh.write(text)
 
 
+# Fixed mtime for fixture files: hash-cache assertions must not depend on
+# wall-clock timestamp behavior of the runner's filesystem (some CI /tmp
+# mounts have coarse or quirky timestamp granularity). Drift detection is
+# content-based, so pinning mtimes is safe.
+PINNED_NS = 1700000000 * 10**9
+
+
+def pin_mtimes(path):
+    for dp, _, fs in os.walk(path):
+        for f in fs:
+            p = os.path.join(dp, f)
+            os.utime(p, ns=(PINNED_NS, PINNED_NS))
+
+
 JUNIT_BASE = """<?xml version="1.0"?>
 <testsuites>
   <testsuite name="auth" tests="2">
@@ -80,6 +94,7 @@ def main():
     write(os.path.join(repo, "src", "main.cpp"), "int main() { return 0; }\n")
     write(os.path.join(repo, "logs", "test.log"), "tests ran\n")
     write(os.path.join(repo, "results.xml"), JUNIT_BASE)
+    pin_mtimes(os.path.join(repo, "src"))
 
     claims = {
         "claims": [
@@ -188,6 +203,7 @@ def main():
     check("fingerprint stable", id1 == id2, f"{id1} vs {id2}")
     with open(os.path.join(srcdir, "auth.cpp"), "a", encoding="utf-8") as fh:
         fh.write("// drift\n")
+    pin_mtimes(srcdir)
     p = run(tg, "fingerprint", "--path", srcdir, "--out", "repro3.json", cwd=repo)
     id3 = json.load(open(os.path.join(repo, "repro3.json"), encoding="utf-8"))["id"]
     check("fingerprint changes on drift", id3 != id1, f"{id1} vs {id3}")
