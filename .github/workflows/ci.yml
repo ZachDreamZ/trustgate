@@ -144,7 +144,7 @@ jobs:
         id: tg
         uses: ./
         with:
-          release-tag: v0.2.0
+          release-tag: v0.3.0
           working-directory: action-test
           claims: claims.json
           policy: policy.json
