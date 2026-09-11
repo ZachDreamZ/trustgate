@@ -48,12 +48,14 @@ jobs:
         run: ctest --test-dir build -C Release --output-junit ../junit.xml --output-on-failure
 
       # Dogfood: this repo's own CI is gated by its own action, using the
-      # binary just built. Claims live in dogfood/claims.json.
+      # binary just built. CI uses single-config generators (Ninja on
+      # Windows, Make on Linux), so the binary lands directly in build/
+      # (the action appends .exe on Windows when needed).
       - name: Dogfood gate (own action, prebuilt binary)
         id: dogfood
         uses: ./
         with:
-          binary: ${{ runner.os == 'Windows' && 'build/Release/tg.exe' || 'build/tg' }}
+          binary: build/tg
           claims: dogfood/claims.json
           junit: junit.xml
           policy: dogfood/policy.json

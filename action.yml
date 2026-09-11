@@ -9,7 +9,11 @@ inputs:
   binary:
     description: >-
       Path to a prebuilt tg binary, relative to working-directory unless
-      absolute (skips checkout/configure/build). Example: build/Release/tg.exe
+      absolute (skips checkout/configure/build). A missing .exe extension is
+      appended automatically on Windows. NOTE: single-config generators
+      (Ninja, Make) place the binary directly in the build dir
+      (build/tg[.exe]); multi-config generators (Visual Studio) use
+      build/<Config>/tg.exe.
     required: false
     default: ''
   source-dir:
