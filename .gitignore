@@ -1,0 +1,35 @@
+# Build outputs
+build/
+out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+*.obj
+*.o
+*.exe
+*.pdb
+*.ilk
+*.log
+
+# Local TrustGate state (per-clone outputs; policies can be committed explicitly)
+.trustgate/verdict.json
+.trustgate/evidence.jsonl
+.trustgate/flake-history.jsonl
+repro.json
+verdict.json
+quarantine.yml
+*.sarif
+
+# IDE / OS
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+Thumbs.db
+.DS_Store
+
+# Windows reserved-device junk accidentally created by redirected output (e.g. `> nul`)
+nul
+NUL

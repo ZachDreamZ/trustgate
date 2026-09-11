@@ -1,0 +1,1 @@
+{"claims": [{"id": "D1", "text": "v0.1: gate+fingerprint+flake stdlib-only C++17, MSVC+CTest green", "files": ["src/cli/commands.cpp:1-40", "src/evidence/verifier.cpp"], "artifacts": ["build/Release/tg.exe"]}]}

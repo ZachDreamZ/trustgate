@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://trustgate.dev/schemas/policy.schema.json",
+  "title": "TrustGate policy",
+  "type": "object",
+  "properties": {
+    "require_file_citation": {
+      "type": "boolean",
+      "default": true,
+      "description": "Every claim must cite at least one existing file."
+    },
+    "require_test_citation": {
+      "type": "boolean",
+      "default": true,
+      "description": "Every claim must cite at least one passing JUnit test."
+    },
+    "require_artifact_citation": {
+      "type": "boolean",
+      "default": false,
+      "description": "Every claim must cite at least one runtime artifact file."
+    },
+    "quarantine_allow": {
+      "type": "boolean",
+      "default": true,
+      "description": "Failed-but-quarantined tests degrade to warnings."
+    },
+    "deny_on_env_drift": {
+      "type": "boolean",
+      "default": false,
+      "description": "Reserved v0.1: gate denies when fingerprint drift is detected."
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""End-to-end smoke test for the `tg` binary.
+
+Builds a throwaway fixture repo in a tmpdir and exercises:
+  gate DENY / lenient / PASS / quarantine-allow / SARIF output,
+  fingerprint stability + drift detection,
+  flake history scoring -> quarantine.yml,
+  init (including --force guard).
+
+Usage: python tests/smoke.py --tg /path/to/tg[.exe]
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+FAILURES = []
+
+
+def check(name, cond, detail=""):
+    if cond:
+        print(f"PASS {name}")
+    else:
+        msg = f"FAIL {name}" + (f": {detail}" if detail else "")
+        print(msg)
+        FAILURES.append(msg)
+
+
+def run(tg, *argv, cwd):
+    proc = subprocess.run(
+        [tg, *argv], cwd=cwd, capture_output=True, text=True, timeout=60
+    )
+    return proc
+
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+
+
+JUNIT_BASE = """<?xml version="1.0"?>
+<testsuites>
+  <testsuite name="auth" tests="2">
+    <testcase classname="AuthTest" name="RefreshToken" time="0.12"/>
+    <testcase classname="AuthTest" name="Logout" time="0.05">
+      <failure message="timeout">stack here</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
+"""
+
+JUNIT_ALLPASS = """<?xml version="1.0"?>
+<testsuites>
+  <testsuite name="auth" tests="2">
+    <testcase classname="AuthTest" name="RefreshToken" time="0.10"/>
+    <testcase classname="AuthTest" name="Logout" time="0.04"/>
+  </testsuite>
+</testsuites>
+"""
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--tg", required=True, help="path to tg binary")
+    args = ap.parse_args()
+    tg = args.tg
+    check("binary exists", os.path.isfile(tg), tg)
+
+    tmp = tempfile.mkdtemp(prefix="tg-smoke-")
+    repo = os.path.join(tmp, "repo")
+    os.makedirs(os.path.join(repo, "src"))
+    os.makedirs(os.path.join(repo, "logs"))
+
+    auth_cpp = "".join(f"// line {i}\nint f{i}() {{ return {i}; }}\n" for i in range(1, 16))
+    write(os.path.join(repo, "src", "auth.cpp"), auth_cpp)
+    write(os.path.join(repo, "src", "main.cpp"), "int main() { return 0; }\n")
+    write(os.path.join(repo, "logs", "test.log"), "tests ran\n")
+    write(os.path.join(repo, "results.xml"), JUNIT_BASE)
+
+    claims = {
+        "claims": [
+            {
+                "id": "C1",
+                "text": "Fix NPE in auth refresh",
+                "files": ["src/auth.cpp:1-10"],
+                "tests": ["AuthTest.RefreshToken"],
+                "artifacts": ["logs/test.log"],
+            },
+            {"id": "C2", "text": "Trust me, it works"},
+        ]
+    }
+    write(os.path.join(repo, "claims.json"), json.dumps(claims))
+
+    # --- 1. DENY on uncited claim ---
+    p = run(
+        tg, "gate", "--claims", "claims.json", "--junit", "results.xml",
+        "--repo", ".", "--out", "verdict.json", "--sarif", "results.sarif",
+        cwd=repo,
+    )
+    check("gate DENY exit code", p.returncode == 2, f"got {p.returncode}: {p.stderr}")
+    try:
+        verdict = json.load(open(os.path.join(repo, "verdict.json"), encoding="utf-8"))
+    except Exception as ex:  # noqa: BLE001
+        verdict = {}
+        check("verdict.json parses", False, str(ex))
+    check("verdict is DENY", verdict.get("verdict") == "DENY", str(verdict.get("verdict")))
+    rules = {(f.get("rule"), f.get("claim")) for f in verdict.get("findings", [])}
+    check("uncited-files flagged for C2", ("uncited-files", "C2") in rules, str(rules))
+    check("uncited-tests flagged for C2", ("uncited-tests", "C2") in rules, str(rules))
+
+    # --- 2. SARIF output ---
+    try:
+        sarif = json.load(open(os.path.join(repo, "results.sarif"), encoding="utf-8"))
+        sarif_ok = (
+            sarif.get("version") == "2.1.0"
+            and len(sarif.get("runs", [{}])[0].get("results", [])) > 0
+        )
+    except Exception as ex:  # noqa: BLE001
+        sarif_ok = False
+        sarif = {"error": str(ex)}
+    check("sarif valid with results", sarif_ok, str(sarif)[:200])
+
+    # --- 3. lenient mode warns instead of denying ---
+    p = run(
+        tg, "gate", "--claims", "claims.json", "--junit", "results.xml",
+        "--repo", ".", "--out", "verdict-lenient.json", "--lenient", cwd=repo,
+    )
+    check("gate --lenient exit 0", p.returncode == 0, f"got {p.returncode}: {p.stderr}")
+    verdict_l = json.load(open(os.path.join(repo, "verdict-lenient.json"), encoding="utf-8"))
+    check(
+        "lenient verdict warns",
+        verdict_l.get("verdict") == "PASS_WITH_WARNINGS",
+        str(verdict_l.get("verdict")),
+    )
+
+    # --- 4. fully-cited claims PASS ---
+    ok_claims = {"claims": [dict(claims["claims"][0])]}
+    write(os.path.join(repo, "claims-ok.json"), json.dumps(ok_claims))
+    p = run(
+        tg, "gate", "--claims", "claims-ok.json", "--junit", "results.xml",
+        "--repo", ".", "--out", "verdict-ok.json", cwd=repo,
+    )
+    check("gate PASS exit 0", p.returncode == 0, f"got {p.returncode}: {p.stdout} {p.stderr}")
+
+    # --- 5. failed test DENY, then quarantine-allow ---
+    q_claims = {
+        "claims": [
+            {
+                "id": "C3",
+                "text": "Logout change",
+                "files": ["src/auth.cpp:1-5"],
+                "tests": ["AuthTest.Logout"],
+            }
+        ]
+    }
+    write(os.path.join(repo, "claims-q.json"), json.dumps(q_claims))
+    p = run(
+        tg, "gate", "--claims", "claims-q.json", "--junit", "results.xml",
+        "--repo", ".", "--out", "verdict-q.json", cwd=repo,
+    )
+    check("failed test DENY", p.returncode == 2, f"got {p.returncode}")
+    write(
+        os.path.join(repo, "quarantine.yml"),
+        "version: 1\nquarantined:\n"
+        "  - id: AuthTest.Logout\n    flake_rate: 0.5\n    runs: 4\n"
+        "    ttl_days: 14\n    reason: \"smoke\"\n",
+    )
+    p = run(
+        tg, "gate", "--claims", "claims-q.json", "--junit", "results.xml",
+        "--repo", ".", "--out", "verdict-q2.json",
+        "--quarantine", "quarantine.yml", cwd=repo,
+    )
+    check("quarantined failure warns", p.returncode == 0, f"got {p.returncode}: {p.stdout}")
+
+    # --- 6. fingerprint stability + drift ---
+    # Scan only the src/ subtree; outputs live in repo/ root so runs cannot
+    # observe their own output files.
+    srcdir = os.path.join(repo, "src")
+    p = run(tg, "fingerprint", "--path", srcdir, "--out", "repro1.json", cwd=repo)
+    check("fingerprint run 1", p.returncode == 0, p.stderr)
+    p = run(tg, "fingerprint", "--path", srcdir, "--out", "repro2.json", cwd=repo)
+    id1 = json.load(open(os.path.join(repo, "repro1.json"), encoding="utf-8"))["id"]
+    id2 = json.load(open(os.path.join(repo, "repro2.json"), encoding="utf-8"))["id"]
+    check("fingerprint stable", id1 == id2, f"{id1} vs {id2}")
+    with open(os.path.join(srcdir, "auth.cpp"), "a", encoding="utf-8") as fh:
+        fh.write("// drift\n")
+    p = run(tg, "fingerprint", "--path", srcdir, "--out", "repro3.json", cwd=repo)
+    id3 = json.load(open(os.path.join(repo, "repro3.json"), encoding="utf-8"))["id"]
+    check("fingerprint changes on drift", id3 != id1, f"{id1} vs {id3}")
+    p = run(
+        tg, "fingerprint", "--compare", "repro1.json", "repro3.json",
+        "--out", "diff.json", cwd=repo,
+    )
+    check("compare exit 4 on drift", p.returncode == 4, f"got {p.returncode}")
+    diff = json.load(open(os.path.join(repo, "diff.json"), encoding="utf-8"))
+    check(
+        "compare names changed file",
+        "auth.cpp" in diff.get("changed", []),
+        str(diff),
+    )
+
+    # --- 7. flake history -> quarantine ---
+    flake_dir = os.path.join(tmp, "flake")
+    os.makedirs(flake_dir)
+    runs = [
+        ("run1.xml", True, True),
+        ("run2.xml", True, False),
+        ("run3.xml", True, False),
+        ("run4.xml", True, True),
+    ]
+    for name, a_ok, b_ok in runs:
+        tag_a = "" if a_ok else '<failure message="x"/>'
+        tag_b = "" if b_ok else '<failure message="x"/>'
+        xml = (
+            '<?xml version="1.0"?><testsuites><testsuite name="s" tests="2">'
+            f'<testcase classname="S" name="A" time="0.01">{tag_a}</testcase>'
+            f'<testcase classname="S" name="B" time="0.01">{tag_b}</testcase>'
+            "</testsuite></testsuites>"
+        )
+        write(os.path.join(flake_dir, name), xml)
+        p = run(
+            tg, "flake", "--junit", name,
+            "--history", "hist.jsonl", "--out", "q.yml", cwd=flake_dir,
+        )
+        check(f"flake {name} exit 0", p.returncode == 0, p.stderr)
+    qtext = open(os.path.join(flake_dir, "q.yml"), encoding="utf-8").read()
+    check("flaky B quarantined", "S.B" in qtext, qtext[:300])
+    check("stable A not quarantined", "S.A" not in qtext, qtext[:300])
+
+    # --- 8. init + --force guard ---
+    initproj = os.path.join(tmp, "initproj")
+    os.makedirs(initproj)
+    p = run(tg, "init", "--path", ".", cwd=initproj)
+    check("init exit 0", p.returncode == 0, p.stderr)
+    check(
+        "init writes policy",
+        os.path.isfile(os.path.join(initproj, ".trustgate", "policy.json")),
+    )
+    p = run(tg, "init", "--path", ".", cwd=initproj)
+    check("init refuses overwrite", p.returncode == 1, f"got {p.returncode}")
+    p = run(tg, "init", "--path", ".", "--force", cwd=initproj)
+    check("init --force overwrites", p.returncode == 0, p.stderr)
+
+    # --- 9. version + unknown command codes ---
+    p = run(tg, "--version", cwd=tmp)
+    check("version exit 0", p.returncode == 0 and "tg " in p.stdout, p.stdout)
+    p = run(tg, "nope", cwd=tmp)
+    check("unknown command exit 1", p.returncode == 1, f"got {p.returncode}")
+    p = run(tg, "eval", cwd=tmp)
+    check("roadmap stub exit 3", p.returncode == 3, f"got {p.returncode}")
+
+    print(f"\n{len(FAILURES)} failures in {tmp}")
+    return 1 if FAILURES else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
