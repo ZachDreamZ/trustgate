@@ -1,7 +1,7 @@
 #include "cli/commands.h"
 
-#include <cstdlib>
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -9,6 +9,7 @@
 #include <sstream>
 #include <tuple>
 
+#include "attest/sign.h"
 #include "core/fsutil.h"
 #include "core/json.h"
 #include "eval/eval.h"
@@ -117,15 +118,130 @@ void printTopHelp() {
         << "  fingerprint   hash a directory tree into a stable repro ID\n"
         << "  flake         score JUnit history, emit quarantine.yml\n"
         << "  eval          run deterministic eval scenarios (evals/*.json)\n"
-        << "  wrap|sign     v1.0 roadmap (not implemented yet)\n"
+        << "  sign          HMAC-SHA256 sign a file (attestation)\n"
+        << "  verify        verify a file signature (exit 2 when INVALID)\n"
+        << "  wrap          v1.0 roadmap (not implemented yet)\n"
         << "\n"
-        << "Exit codes: 0 pass, 2 DENY/drift, 1 usage or IO error, 3 not implemented.\n"
+        << "Exit codes: 0 pass, 2 DENY / eval FAIL / INVALID signature,\n"
+        << "  4 fingerprint drift, 1 usage or IO error, 3 not implemented.\n"
         << "Run `tg <command> --help` for command options.\n";
 }
 
 int cmdStub(const std::string& name) {
     std::cout << "tg " << name << " is on the v1.0 roadmap (see README). Nothing to do.\n";
     return 3;
+}
+
+int cmdSign(const std::vector<std::string>& args) {
+    ParsedArgs p = parseFlags(args, {"help"});
+    if (optBool(p, "help")) {
+        std::cout << "Usage:\n"
+                     "  tg sign --gen-key KEYFILE\n"
+                     "  tg sign --in FILE --sig SIGFILE [--key HEX | --key-file F | --key-env N]\n"
+                     "Keys are hex (16..128 bytes); exactly one source. Exit 1 on usage/IO error.\n";
+        return 0;
+    }
+    std::string genKey = optOnce(p, "gen-key", "");
+    if (!genKey.empty()) {
+        ensureParentDir(genKey);
+        if (!writeFile(genKey, randomKeyHex() + "\n")) {
+            std::cerr << "cannot write key file: " + genKey + "\n";
+            return 1;
+        }
+        std::cout << "wrote 32-byte key: " + genKey + " (keep secret)\n";
+        return 0;
+    }
+    std::string inPath = optOnce(p, "in", "");
+    std::string sigPath = optOnce(p, "sig", "");
+    if (inPath.empty() || sigPath.empty()) {
+        std::cerr << "need --in FILE and --sig SIGFILE (or --gen-key KEYFILE)\n";
+        return 1;
+    }
+    KeyLoad key = loadKey(optOnce(p, "key", ""), optOnce(p, "key-file", ""),
+                          optOnce(p, "key-env", ""));
+    if (!key.error.empty()) {
+        std::cerr << key.error + "\n";
+        return 1;
+    }
+    std::string data;
+    try {
+        data = readFile(inPath);
+    } catch (const std::exception& ex) {
+        std::cerr << std::string("cannot read input: ") + ex.what() + "\n";
+        return 1;
+    }
+    std::string mac = attestationMac(key.bytes, inPath, data);
+    JsonValue sig = JsonValue::makeObject();
+    sig.object["file"] = JsonValue::makeString(inPath);
+    sig.object["algorithm"] = JsonValue::makeString("HMAC-SHA256");
+    sig.object["hmac"] = JsonValue::makeString(mac);
+    ensureParentDir(sigPath);
+    if (!writeFile(sigPath, toJson(sig, true) + "\n")) {
+        std::cerr << "cannot write signature file: " + sigPath + "\n";
+        return 1;
+    }
+    std::cout << "signed " + inPath + " -> " + sigPath + "\n";
+    return 0;
+}
+
+int cmdVerify(const std::vector<std::string>& args) {
+    ParsedArgs p = parseFlags(args, {"help"});
+    if (optBool(p, "help")) {
+        std::cout << "Usage: tg verify --in FILE --sig SIGFILE "
+                     "[--key HEX | --key-file F | --key-env N]\n"
+                     "Exit 0 VALID, 2 INVALID, 1 usage or IO error. The filename is\n"
+                     "cryptographically bound into the MAC: transplanted or renamed\n"
+                     "files verify INVALID even with identical bytes.\n";
+        return 0;
+    }
+    std::string inPath = optOnce(p, "in", "");
+    std::string sigPath = optOnce(p, "sig", "");
+    if (inPath.empty() || sigPath.empty()) {
+        std::cerr << "need --in FILE and --sig SIGFILE\n";
+        return 1;
+    }
+    KeyLoad key = loadKey(optOnce(p, "key", ""), optOnce(p, "key-file", ""),
+                          optOnce(p, "key-env", ""));
+    if (!key.error.empty()) {
+        std::cerr << key.error + "\n";
+        return 1;
+    }
+    JsonValue sig;
+    try {
+        sig = parseJson(readFile(sigPath));
+    } catch (const std::exception& ex) {
+        std::cerr << std::string("cannot load signature: ") + ex.what() + "\n";
+        return 1;
+    }
+    auto invalid = [&](const std::string& why) {
+        std::cout << "INVALID (" + why + ")\n";
+        return 2;
+    };
+    if (!sig.isObject() || sig.getString("algorithm", "") != "HMAC-SHA256") {
+        return invalid("unsupported algorithm");
+    }
+    if (sig.getString("file", "") != inPath) {
+        return invalid("filename mismatch (signature bound to '" + sig.getString("file", "") + "')");
+    }
+    std::vector<uint8_t> expected;
+    if (!fromHex(sig.getString("hmac", ""), expected) || expected.size() != 32) {
+        return invalid("malformed hmac");
+    }
+    std::string data;
+    try {
+        data = readFile(inPath);
+    } catch (const std::exception& ex) {
+        std::cerr << std::string("cannot read input: ") + ex.what() + "\n";
+        return 1;
+    }
+    std::vector<uint8_t> actualBytes;
+    // inPath == recorded path here (checked above); the MAC covers both.
+    fromHex(attestationMac(key.bytes, inPath, data), actualBytes);
+    if (actualBytes.size() != 32 || !constantTimeEqual(actualBytes.data(), expected.data(), 32)) {
+        return invalid("hmac mismatch");
+    }
+    std::cout << "VALID " + inPath + "\n";
+    return 0;
 }
 
 int cmdInit(const std::vector<std::string>& args) {

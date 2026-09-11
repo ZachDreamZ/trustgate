@@ -35,7 +35,9 @@ int main(int argc, char** argv) {
     if (cmd == "fingerprint" || cmd == "fp") return tg::cmdFingerprint(rest);
     if (cmd == "flake") return tg::cmdFlake(rest);
     if (cmd == "eval") return tg::cmdEval(rest);
-    if (cmd == "wrap" || cmd == "sign") return tg::cmdStub(cmd);
+    if (cmd == "sign") return tg::cmdSign(rest);
+    if (cmd == "verify") return tg::cmdVerify(rest);
+    if (cmd == "wrap") return tg::cmdStub(cmd);
 
     std::cerr << "unknown command: " << cmd << "\n\n";
     tg::printTopHelp();

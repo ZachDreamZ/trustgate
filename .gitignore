@@ -22,6 +22,9 @@ quarantine.yml
 *.sarif
 junit.xml
 eval-results.json
+*.sig
+*.hex
+tg-ephemeral.key
 .trustgate/eval-history.jsonl
 
 # IDE / OS

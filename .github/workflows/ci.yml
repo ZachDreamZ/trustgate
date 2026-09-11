@@ -69,6 +69,7 @@ jobs:
           name: trustgate-verdict-${{ runner.os }}
           path: |
             verdict.json
+            verdict.sig
             trustgate.sarif
             junit.xml
             eval-results.json
@@ -80,6 +81,18 @@ jobs:
           BIN="build/tg"
           if [ ! -f "$BIN" ] && [ -f "$BIN.exe" ]; then BIN="$BIN.exe"; fi
           "$BIN" eval --dir evals --repo . --out eval-results.json
+
+      # Dogfood attestations: sign the verdict with an ephemeral key and
+      # verify it. Real deployments persist the key as a CI secret instead.
+      - name: Dogfood sign round-trip
+        shell: bash
+        run: |
+          BIN="build/tg"
+          if [ ! -f "$BIN" ] && [ -f "$BIN.exe" ]; then BIN="$BIN.exe"; fi
+          "$BIN" sign --gen-key tg-ephemeral.key
+          "$BIN" sign --in verdict.json --sig verdict.sig --key-file tg-ephemeral.key
+          "$BIN" verify --in verdict.json --sig verdict.sig --key-file tg-ephemeral.key
+          rm -f tg-ephemeral.key
 
       - name: Upload SARIF
         if: always()

@@ -74,10 +74,13 @@ tg flake --junit results.xml [...] [--history .trustgate/flake-history.jsonl]
          [--clusters-out clusters.json] [--min-sim 0.5]
 tg eval [--dir evals] [--repo .] [--out eval-results.json] [--filter SUBSTR]
 tg eval --trend [--last N]
+tg sign --gen-key KEYFILE
+tg sign --in FILE --sig SIGFILE [--key HEX | --key-file F | --key-env N]
+tg verify --in FILE --sig SIGFILE [--key HEX | --key-file F | --key-env N]
 ```
 
-Exit codes: `0` pass (or warn-only), `2` DENY / drift-detected / eval FAIL,
-`1` usage/IO error, `3` not implemented in this version (`wrap`, `sign`).
+Exit codes: `0` pass (or warn-only), `2` DENY / eval FAIL / INVALID signature,
+`4` fingerprint drift, `1` usage/IO error, `3` not implemented (`wrap`).
 
 ### claims.json
 
@@ -103,17 +106,23 @@ tests degrade to warnings when the policy allows it.
 
 ```text
 src/main.cpp                 CLI dispatch
-src/cli/commands.*           init|gate|fingerprint|flake (+ wrap/eval/sign stubs)
+src/cli/commands.*           init|gate|fingerprint|flake|eval|sign|verify (+ wrap stub)
 src/core/json.*              minimal JSON parser/serializer (sufficient subset)
 src/core/fsutil.*            file IO, FNV-1a-64 hashing (BLAKE3 upgrade path)
+src/core/mmap.*              memory-mapped file reads (Windows + POSIX)
 src/core/proc.*              best-effort process capture for toolchain probes
+src/attest/sha256.*          FIPS 180-4 SHA-256, stdlib-only
+src/attest/sign.*            HMAC-SHA256 attestations, key loading
 src/evidence/policy.*        JSON policy engine (Rego-lite equivalent)
 src/evidence/claims.*        claims loader + file-ref grammar
 src/evidence/verifier.*      citation checker -> findings + verdict
 src/evidence/sarif.*         minimal SARIF 2.1.0 writer
-src/repro/fingerprint.*      directory fingerprint + compare/diff
-src/flake/junit.*            tolerant JUnit XML scanner
+src/eval/eval.*              deterministic eval scenarios + runner
+src/repro/fingerprint.*      directory fingerprint + compare/diff + hash cache
+src/flake/junit.*            tolerant JUnit XML scanner (captures failure text)
 src/flake/quarantine.*       JSONL history, flake scoring, quarantine.yml
+src/flake/category.*         heuristic root-cause classifier
+src/flake/cluster.*          systemic co-occurrence clustering
 tests/smoke.py               end-to-end CTest smoke (fixture repo in tmpdir)
 schemas/policy.schema.json   policy JSON Schema (draft-07)
 .github/workflows/ci.yml     windows-latest + ubuntu-latest
@@ -123,10 +132,11 @@ schemas/policy.schema.json   policy JSON Schema (draft-07)
 
 Shipped: evidence gate, repro fingerprint (threads/mmap/cache), flake triage
 with root-cause ranking and systemic co-occurrence clustering, EvalOps Lite
-(`tg eval`), reusable action, tagged releases with prebuilt binaries.
+(`tg eval`), HMAC-SHA256 attestations (`tg sign` / `tg verify`), reusable
+action, tagged releases with prebuilt binaries.
 
-Next: `tg wrap` (agent output capture), `tg sign` (Ed25519 attestation),
-SARIF rules metadata, timing-based cause rules, VS Code extension.
+Next: `tg wrap` (agent output capture), SARIF rules metadata, timing-based
+cause rules, VS Code extension.
 - Hardening path (no behavior change): BLAKE3 file hashing, SQLite evidence
   store (replacing JSONL), libgit2 diff (replacing `git` shell-out),
   tree-sitter symbol refs, GoogleTest unit suite.

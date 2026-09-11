@@ -376,6 +376,62 @@ def main():
     bc = next(g for g in cl["clusters"] if sorted(g["tests"]) == ["S.B", "S.C"])
     check("cluster cause network", bc.get("cause") == "network", str(bc))
 
+    # --- 13. sign/verify round-trip, RFC vector, tamper matrix ---
+    sdir = os.path.join(tmp, "sign")
+    os.makedirs(sdir)
+    write(os.path.join(sdir, "data.txt"), "important bytes\n")
+    import hashlib as _hashlib
+    import hmac as _hmac
+    import shutil as _shutil
+    write(os.path.join(sdir, "rfc.txt"), "Hi There")
+    p = run(tg, "sign", "--in", "rfc.txt", "--sig", "rfc.sig",
+            "--key", "0b" * 20, cwd=sdir)
+    check("sign rfc exit 0", p.returncode == 0, p.stderr)
+    sig = json.load(open(os.path.join(sdir, "rfc.sig"), encoding="utf-8"))
+    expect = _hmac.new(bytes.fromhex("0b" * 20), b"rfc.txt\x00Hi There",
+                       _hashlib.sha256).hexdigest()
+    check("hmac cross-checks against Python hmac", sig.get("hmac") == expect,
+          str(sig.get("hmac")) + " vs " + expect)
+    check("sig binds filename", sig.get("file") == "rfc.txt", str(sig))
+    check("sig algorithm id", sig.get("algorithm") == "HMAC-SHA256", str(sig))
+    p = run(tg, "sign", "--gen-key", "k.hex", cwd=sdir)
+    check("gen-key exit 0", p.returncode == 0, p.stderr)
+    keytext = open(os.path.join(sdir, "k.hex"), encoding="utf-8").read().strip()
+    check("gen-key 32 bytes hex",
+          len(keytext) == 64 and all(c in "0123456789abcdef" for c in keytext),
+          keytext[:20])
+    p = run(tg, "sign", "--in", "data.txt", "--sig", "data.sig",
+            "--key-file", "k.hex", cwd=sdir)
+    check("sign exit 0", p.returncode == 0, p.stderr)
+    p = run(tg, "verify", "--in", "data.txt", "--sig", "data.sig",
+            "--key-file", "k.hex", cwd=sdir)
+    check("verify VALID exit 0", p.returncode == 0 and "VALID " in p.stdout, p.stdout)
+    write(os.path.join(sdir, "data.txt"), "important bytes?\n")
+    p = run(tg, "verify", "--in", "data.txt", "--sig", "data.sig",
+            "--key-file", "k.hex", cwd=sdir)
+    check("tampered exit 2", p.returncode == 2 and "INVALID" in p.stdout, p.stdout)
+    write(os.path.join(sdir, "data.txt"), "important bytes\n")
+    p = run(tg, "sign", "--gen-key", "k2.hex", cwd=sdir)
+    check("gen-key2 exit 0", p.returncode == 0, p.stderr)
+    p = run(tg, "verify", "--in", "data.txt", "--sig", "data.sig",
+            "--key-file", "k2.hex", cwd=sdir)
+    check("wrong key exit 2", p.returncode == 2, f"got {p.returncode}")
+    _shutil.copy(os.path.join(sdir, "data.txt"), os.path.join(sdir, "other.txt"))
+    _shutil.copy(os.path.join(sdir, "data.sig"), os.path.join(sdir, "other.sig"))
+    patched = json.load(open(os.path.join(sdir, "other.sig"), encoding="utf-8"))
+    patched["file"] = "other.txt"
+    json.dump(patched, open(os.path.join(sdir, "other.sig"), "w"))
+    p = run(tg, "verify", "--in", "other.txt", "--sig", "other.sig",
+            "--key-file", "k.hex", cwd=sdir)
+    check("patched transplant exit 2", p.returncode == 2 and "INVALID" in p.stdout,
+          p.stdout)
+    p = run(tg, "verify", "--in", "data.txt", "--sig", "data.sig", cwd=sdir)
+    check("no key exit 1", p.returncode == 1, f"got {p.returncode}")
+    write(os.path.join(sdir, "bad.sig"), "not json{{{")
+    p = run(tg, "verify", "--in", "data.txt", "--sig", "bad.sig",
+            "--key-file", "k.hex", cwd=sdir)
+    check("garbage sig exit 1", p.returncode == 1, f"got {p.returncode}")
+
     print(f"\n{len(FAILURES)} failures in {tmp}")
     return 1 if FAILURES else 0
 
