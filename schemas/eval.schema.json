@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://trustgate.dev/schemas/eval.schema.json",
+  "title": "TrustGate eval",
+  "type": "object",
+  "required": ["asserts"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Eval name (defaults to the file stem)."
+    },
+    "description": {"type": "string"},
+    "run": {
+      "type": "string",
+      "description": "Shell command to execute (stdout+stderr merged is the match corpus). Runs with user privileges, no timeout, no sandbox."
+    },
+    "asserts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "enum": ["match", "exit_code", "file_exists", "json_field", "max_ms"]
+          },
+          "pattern": {
+            "type": "string",
+            "description": "match: substring or regex to look for."
+          },
+          "regex": {
+            "type": "boolean",
+            "default": false,
+            "description": "match: treat pattern as a regular expression."
+          },
+          "present": {
+            "type": "boolean",
+            "default": true,
+            "description": "match: false inverts (pattern must be absent)."
+          },
+          "file": {
+            "type": "string",
+            "description": "match/json_field: corpus or document path, relative to --repo."
+          },
+          "expected": {
+            "type": "number",
+            "description": "exit_code: required process exit code."
+          },
+          "path": {
+            "type": "string",
+            "description": "file_exists: path that must exist, relative to --repo."
+          },
+          "field": {
+            "type": "string",
+            "description": "json_field: dot path (numeric segments index arrays), e.g. stats.errors."
+          },
+          "equals": {
+            "description": "json_field: expected JSON value (any type, compared strictly)."
+          },
+          "value": {
+            "type": "number",
+            "description": "max_ms: run wall-time budget in milliseconds."
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -47,7 +47,14 @@ struct FingerprintResult {
     Fingerprint fp;
     std::vector<std::string> warnings;
     int skipped = 0;
+    // Up to kMaxSkipPaths reported skip paths (UTF-8 rel paths); the count
+    // above is authoritative. Skips happen on unreadable entries and, on
+    // Windows, paths hitting the 260-char MAX_PATH limit — always surfaced,
+    // never silent, so coverage gaps cannot hide.
+    std::vector<std::string> skippedPaths;
 };
+
+const std::size_t kMaxSkipPaths = 50;
 
 FingerprintResult computeFingerprint(const FingerprintOptions& opts);
 

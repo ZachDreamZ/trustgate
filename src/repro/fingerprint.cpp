@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -178,9 +179,15 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
         fs::recursive_directory_iterator it(rootPath,
                                             fs::directory_options::skip_permission_denied, ec);
         fs::recursive_directory_iterator end;
+        auto noteSkip = [&](const std::string& display) {
+            ++result.skipped;
+            if (!display.empty() && result.skippedPaths.size() < kMaxSkipPaths) {
+                result.skippedPaths.push_back(display);
+            }
+        };
         for (; !ec && it != end; it.increment(ec)) {
             if (ec) {
-                ++result.skipped;
+                noteSkip("");
                 ec.clear();
                 continue;
             }
@@ -191,12 +198,12 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
                 continue;
             }
             if (ec) {
-                ++result.skipped;
+                noteSkip(pathToUtf8(p));
                 ec.clear();
                 continue;
             }
             if (!it->is_regular_file(ec) || ec) {
-                ++result.skipped;  // symlinks, sockets, etc. are out of scope v0.1
+                noteSkip(pathToUtf8(p));  // symlinks, sockets, etc. are out of scope
                 ec.clear();
                 continue;
             }
@@ -204,7 +211,7 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
             std::error_code relEc;
             fs::path rel = fs::relative(p, rootPath, relEc);
             if (relEc) {
-                ++result.skipped;
+                noteSkip(pathToUtf8(p));
                 continue;
             }
             Target t;
@@ -250,6 +257,7 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
     std::vector<char> fromCache(targets.size(), 0);
     std::atomic<std::size_t> next{0};
     std::atomic<int> skippedCount{result.skipped};
+    std::mutex skipMutex;
     unsigned hw = std::thread::hardware_concurrency();
     unsigned workers = 1;
     if (targets.size() >= 64) {
@@ -292,6 +300,10 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
                     ready[i] = 1;
                 } catch (...) {
                     skippedCount.fetch_add(1, std::memory_order_relaxed);
+                    std::lock_guard<std::mutex> lock(skipMutex);
+                    if (result.skippedPaths.size() < kMaxSkipPaths) {
+                        result.skippedPaths.push_back(t.rel);
+                    }
                 }
             }
         }

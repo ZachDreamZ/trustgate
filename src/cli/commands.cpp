@@ -363,8 +363,15 @@ int cmdGate(const std::vector<std::string>& args) {
         std::cerr << "missing required --claims claims.json\n";
         return 1;
     }
-    std::string policyPath = optOnce(p, "policy", ".trustgate/policy.json");
     std::string repo = optOnce(p, "repo", ".");
+    std::string policyPath = optOnce(p, "policy", "");
+    if (policyPath.empty()) {
+        // Default policy travels with the scanned repo, not the cwd.
+        std::string r = repo;
+        while (!r.empty() && (r.back() == '/' || r.back() == '\\')) r.pop_back();
+        policyPath =
+            (r.empty() || r == ".") ? ".trustgate/policy.json" : r + "/.trustgate/policy.json";
+    }
     std::string outPath = optOnce(p, "out", "verdict.json");
     std::string sarifPath = optOnce(p, "sarif", "");
     std::string quarantinePath = optOnce(p, "quarantine", "quarantine.yml");
@@ -554,7 +561,11 @@ int cmdFingerprint(const std::vector<std::string>& args) {
     std::cout << "fingerprint: " << res.fp.id << " (" << res.fp.files.size() << " files -> "
               << outPath << ")\n";
     for (const std::string& w : res.warnings) std::cout << "  warning: " << w << "\n";
-    if (res.skipped > 0) std::cout << "  skipped entries: " << res.skipped << "\n";
+    if (res.skipped > 0) {
+        std::cout << "  skipped entries: " << res.skipped << " (showing up to "
+                  << res.skippedPaths.size() << "):\n";
+        for (const std::string& s : res.skippedPaths) std::cout << "    - " << s << "\n";
+    }
     return 0;
 }
 

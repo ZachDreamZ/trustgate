@@ -5,6 +5,15 @@ versions follow Semantic Versioning (`tg --version`).
 
 ## [Unreleased]
 
+### Added
+- Fingerprint lists skipped paths (up to 50) instead of only a count.
+- `schemas/eval.schema.json` documents the eval file format.
+- Default gate policy resolves relative to `--repo`, not the cwd.
+
+### Fixed
+- Fast-fail crash (`0xC0000409`) on non-ASCII filenames: explicit UTF-8
+  path handling end to end (found by the real-world panel on express/bat).
+
 ## [0.3.0] — 2026-09-11
 
 ### Added

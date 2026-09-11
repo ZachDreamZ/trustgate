@@ -13,7 +13,7 @@ flake-aware quarantine built in.
 ```text
 tg gate --claims claims.json --junit results.xml
 # DENY: 2 uncited claims, 1 failed test  (exit 2)
-# verdict.json + results.sarif written
+# verdict.json written (add --sarif results.sarif for SARIF output)
 ```
 
 ## Why this exists (and what it is not)
@@ -40,6 +40,33 @@ Download a prebuilt binary from
 (`tg-windows-x64.zip` / `tg-linux-x64.tar.gz`, each bundled with LICENSE
 and README), or build from source below. Releases are cut from `v*` tags,
 kept in sync with the project version.
+
+## 5-minute walkthrough (prebuilt binary)
+
+In an empty dir, describe what an agent claims to have done:
+
+```jsonc
+// claims.json
+{"claims": [{"id": "C1", "text": "Fix login retry",
+  "files": ["src/auth.cpp:10-25"], "tests": ["AuthTest.Retry"],
+  "artifacts": ["logs/test.log"]}]}
+```
+
+```xml
+<!-- results.xml (JUnit; any runner's --junitxml output works) -->
+<testsuites><testsuite name="auth">
+  <testcase classname="AuthTest" name="Retry" time="0.12"/>
+</testsuite></testsuites>
+```
+
+```sh
+tg init --path .
+tg gate --claims claims.json --junit results.xml --repo .
+# PASS or DENY with exact missing citations (exit 0 or 2); see verdict.json
+```
+
+Evals are plain JSON too — see [`schemas/eval.schema.json`](schemas/eval.schema.json)
+and the live examples in [`evals/`](evals/).
 
 ## Quickstart
 
@@ -86,6 +113,10 @@ Exit codes: `0` pass (or warn-only), `2` DENY / eval FAIL / INVALID signature,
 Windows note: in-tree Unicode filenames are handled as UTF-8 end to end
 (walk, hash, cite, verify). Non-ASCII CLI *arguments* depend on console
 encoding — prefer ASCII paths for `--path`/`--repo` when scripting.
+
+`tg fingerprint` skips `.git`, build outputs, and `.trustgate/` run state;
+every skip is listed in the output (never silent). On Windows, paths past
+the OS 260-char limit are reported as skips.
 
 ### claims.json
 
