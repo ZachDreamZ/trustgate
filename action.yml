@@ -1,0 +1,151 @@
+name: TrustGate
+description: >-
+  Local trust gate for AI-written code. Blocks merges unless every AI claim
+  cites exact files, tests, and runtime artifacts. No cloud, no data leaves
+  the runner.
+author: TrustGate contributors
+
+inputs:
+  binary:
+    description: >-
+      Path to a prebuilt tg binary, relative to working-directory unless
+      absolute (skips checkout/configure/build). Example: build/Release/tg.exe
+    required: false
+    default: ''
+  source-dir:
+    description: >-
+      Existing TrustGate checkout to build, relative to the workflow workspace
+      unless absolute (skips actions/checkout). Use 'source-dir: .' for
+      self-hosting.
+    required: false
+    default: ''
+  tool-ref:
+    description: Git ref of ZachDreamZ/trustgate to build when source-dir is empty.
+    required: false
+    default: main
+  working-directory:
+    description: Directory holding claims/policy/junit files; verdict outputs land here too.
+    required: false
+    default: .
+  claims:
+    description: claims.json path, relative to working-directory.
+    required: false
+    default: claims.json
+  junit:
+    description: JUnit XML files, space-separated, relative to working-directory.
+    required: false
+    default: ''
+  policy:
+    description: Policy file, relative to working-directory.
+    required: false
+    default: .trustgate/policy.json
+  quarantine:
+    description: Quarantine file, relative to working-directory (passed only when present).
+    required: false
+    default: quarantine.yml
+  lenient:
+    description: "'true' demotes DENY findings to warnings (exit 0)."
+    required: false
+    default: 'false'
+  fail-on-deny:
+    description: "'false' always exits 0; inspect the verdict output instead."
+    required: false
+    default: 'true'
+  out:
+    description: Verdict JSON filename, relative to working-directory.
+    required: false
+    default: verdict.json
+  sarif:
+    description: SARIF filename, relative to working-directory ('' to skip).
+    required: false
+    default: trustgate.sarif
+
+outputs:
+  verdict:
+    description: PASS, PASS_WITH_WARNINGS, or DENY.
+    value: ${{ steps.gate.outputs.verdict }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up MSVC (Windows)
+      if: runner.os == 'Windows' && inputs.binary == ''
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    - name: Resolve tool source
+      if: inputs.binary == ''
+      id: src
+      shell: bash
+      env:
+        TG_SOURCE_DIR: ${{ inputs.source-dir }}
+      run: |
+        SRC="$TG_SOURCE_DIR"
+        if [ -z "$SRC" ]; then SRC=".trustgate-dist"; fi
+        case "$SRC" in
+          /*|[A-Za-z]:*) ;;
+          *) SRC="$GITHUB_WORKSPACE/$SRC" ;;
+        esac
+        echo "path=$SRC" >> "$GITHUB_OUTPUT"
+
+    - name: Check out TrustGate
+      if: inputs.binary == '' && inputs.source-dir == ''
+      uses: actions/checkout@v4
+      with:
+        repository: ZachDreamZ/trustgate
+        ref: ${{ inputs.tool-ref }}
+        path: .trustgate-dist
+
+    - name: Configure
+      if: inputs.binary == ''
+      shell: bash
+      run: cmake -S "${{ steps.src.outputs.path }}" -B "${{ steps.src.outputs.path }}/build" -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      if: inputs.binary == ''
+      shell: bash
+      run: cmake --build "${{ steps.src.outputs.path }}/build" --config Release
+
+    - name: Gate
+      id: gate
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TG_BINARY: ${{ inputs.binary }}
+        TG_SRC: ${{ steps.src.outputs.path }}
+        TG_CLAIMS: ${{ inputs.claims }}
+        TG_JUNIT: ${{ inputs.junit }}
+        TG_POLICY: ${{ inputs.policy }}
+        TG_QUARANTINE: ${{ inputs.quarantine }}
+        TG_LENIENT: ${{ inputs.lenient }}
+        TG_FAIL_ON_DENY: ${{ inputs.fail-on-deny }}
+        TG_OUT: ${{ inputs.out }}
+        TG_SARIF: ${{ inputs.sarif }}
+      run: |
+        BIN="$TG_BINARY"
+        if [ -z "$BIN" ]; then BIN="$TG_SRC/build/tg"; fi
+        case "$BIN" in
+          /*|[A-Za-z]:*) ;;
+          *) BIN="$GITHUB_WORKSPACE/${{ inputs.working-directory }}/$BIN" ;;
+        esac
+        if [ ! -f "$BIN" ] && [ -f "$BIN.exe" ]; then BIN="$BIN.exe"; fi
+        if [ ! -f "$BIN" ]; then echo "tg binary not found: $BIN" >&2; exit 1; fi
+        ARGS=(gate --claims "$TG_CLAIMS" --policy "$TG_POLICY" --repo "." --out "$TG_OUT")
+        if [ -n "$TG_JUNIT" ]; then ARGS+=(--junit $TG_JUNIT); fi
+        if [ -n "$TG_QUARANTINE" ] && [ -f "$TG_QUARANTINE" ]; then ARGS+=(--quarantine "$TG_QUARANTINE"); fi
+        if [ -n "$TG_SARIF" ]; then ARGS+=(--sarif "$TG_SARIF"); fi
+        if [ "$TG_LENIENT" = "true" ]; then ARGS+=(--lenient); fi
+        set +e
+        "$BIN" "${ARGS[@]}"
+        RC=$?
+        set -e
+        VERDICT="UNKNOWN"
+        if [ -f "$TG_OUT" ]; then
+          VERDICT=$(grep -o '"verdict": *"[^"]*"' "$TG_OUT" | head -1 | cut -d'"' -f4)
+          [ -z "$VERDICT" ] && VERDICT="UNKNOWN"
+        fi
+        echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+        echo "trustgate verdict: $VERDICT (exit $RC)"
+        if [ "$TG_FAIL_ON_DENY" = "true" ] && [ "$RC" -ne 0 ]; then exit "$RC"; fi
+        exit 0

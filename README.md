@@ -120,6 +120,24 @@ See [BENCHMARKS.md](BENCHMARKS.md) for methodology and latest numbers
 (MSVC Release, Windows). Reproduce with
 `python bench/bench.py --tg build/Release/tg.exe`.
 
+## Use in CI
+
+```yaml
+- uses: ZachDreamZ/trustgate@main
+  with:
+    claims: claims.json
+    junit: results.xml
+    policy: .trustgate/policy.json
+```
+
+Inputs: `binary` (prebuilt `tg`, skips the source build), `source-dir`
+(build an existing checkout, e.g. `'.'` for self-hosting), `tool-ref`,
+`working-directory`, `junit`, `policy`, `quarantine`, `lenient`,
+`fail-on-deny`, `out`, `sarif`. Output: `verdict`
+(`PASS` / `PASS_WITH_WARNINGS` / `DENY`). The exit code is 2 on DENY unless
+`lenient` or `fail-on-deny: 'false'`. This repo dogfoods the action on every
+push — see `dogfood/` and `.github/workflows/ci.yml`.
+
 ## Contributing
 
 Keep it stdlib-only until v1.0. Every new check needs a `tests/smoke.py`

@@ -20,6 +20,7 @@ repro.json
 verdict.json
 quarantine.yml
 *.sarif
+junit.xml
 
 # IDE / OS
 .vs/

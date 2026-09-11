@@ -1,0 +1,40 @@
+{
+  "claims": [
+    {
+      "id": "D1",
+      "text": "Evidence gate verifies every AI claim against cited files, tests, and artifacts",
+      "files": [
+        "src/evidence/verifier.cpp",
+        "src/evidence/verifier.h",
+        "src/evidence/claims.cpp",
+        "src/evidence/claims.h"
+      ],
+      "tests": ["smoke.smoke"],
+      "artifacts": ["junit.xml"]
+    },
+    {
+      "id": "D2",
+      "text": "Repro fingerprint hashes directory trees deterministically with cache and mmap reads",
+      "files": [
+        "src/repro/fingerprint.cpp",
+        "src/repro/fingerprint.h",
+        "src/core/mmap.cpp",
+        "src/core/mmap.h"
+      ],
+      "tests": ["smoke.smoke"],
+      "artifacts": ["junit.xml"]
+    },
+    {
+      "id": "D3",
+      "text": "Flake triage scores JUnit history and emits quarantine; CLI dispatches all commands",
+      "files": [
+        "src/flake/quarantine.cpp",
+        "src/flake/quarantine.h",
+        "src/flake/junit.cpp",
+        "src/cli/commands.cpp"
+      ],
+      "tests": ["smoke.smoke"],
+      "artifacts": ["junit.xml"]
+    }
+  ]
+}

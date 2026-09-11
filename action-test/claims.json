@@ -1,0 +1,9 @@
+{
+  "claims": [
+    {
+      "id": "A1",
+      "text": "Action smoke: composite action builds the tool and gates this fixture",
+      "files": ["claims.json", "policy.json"]
+    }
+  ]
+}

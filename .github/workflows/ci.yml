@@ -4,12 +4,19 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build-test:
     strategy:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      actions: write
+      security-events: write
     steps:
       - uses: actions/checkout@v4
 
@@ -38,4 +45,61 @@ jobs:
         run: cmake --build build --config Release
 
       - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build -C Release --output-junit ../junit.xml --output-on-failure
+
+      # Dogfood: this repo's own CI is gated by its own action, using the
+      # binary just built. Claims live in dogfood/claims.json.
+      - name: Dogfood gate (own action, prebuilt binary)
+        id: dogfood
+        uses: ./
+        with:
+          binary: ${{ runner.os == 'Windows' && 'build/Release/tg.exe' || 'build/tg' }}
+          claims: dogfood/claims.json
+          junit: junit.xml
+          policy: dogfood/policy.json
+          out: verdict.json
+          sarif: trustgate.sarif
+
+      - name: Upload verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trustgate-verdict-${{ runner.os }}
+          path: |
+            verdict.json
+            trustgate.sarif
+            junit.xml
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trustgate.sarif
+          category: trustgate
+
+  action-test:
+    # Validates the consumer path: full source build through the published
+    # action interface (no prebuilt binary), on both OSes.
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run action (source build)
+        id: tg
+        uses: ./
+        with:
+          source-dir: .
+          working-directory: action-test
+          claims: claims.json
+          policy: policy.json
+          out: verdict.json
+          sarif: ''
+
+      - name: Assert PASS verdict
+        shell: bash
+        run: test "${{ steps.tg.outputs.verdict }}" = "PASS"

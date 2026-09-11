@@ -1,0 +1,7 @@
+{
+  "require_file_citation": true,
+  "require_test_citation": false,
+  "require_artifact_citation": false,
+  "quarantine_allow": true,
+  "deny_on_env_drift": false
+}
