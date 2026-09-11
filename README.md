@@ -67,10 +67,13 @@ tg fingerprint [--path DIR] [--out repro.json] [--env NAME ...]
 tg fingerprint --compare old.json new.json [--out diff.json]
 tg flake --junit results.xml [...] [--history .trustgate/flake-history.jsonl]
          [--out quarantine.yml] [--min-runs 3] [--ttl-days 14]
+         [--clusters-out clusters.json] [--min-sim 0.5]
+tg eval [--dir evals] [--repo .] [--out eval-results.json] [--filter SUBSTR]
+tg eval --trend [--last N]
 ```
 
-Exit codes: `0` pass (or warn-only), `2` DENY / drift-detected,
-`1` usage/IO error, `3` not implemented in this version (`wrap`, `eval`, `sign`).
+Exit codes: `0` pass (or warn-only), `2` DENY / drift-detected / eval FAIL,
+`1` usage/IO error, `3` not implemented in this version (`wrap`, `sign`).
 
 ### claims.json
 
@@ -114,10 +117,12 @@ schemas/policy.schema.json   policy JSON Schema (draft-07)
 
 ## Roadmap
 
-- **v0.2**: full SARIF rules metadata, GitHub Action (`trustgate-action`),
-  heuristic root-cause ranking for quarantined tests.
-- **v1.0**: systemic co-occurrence clustering, EvalOps Lite (`tg eval`),
-  Ed25519 attestation (`tg sign`), agent wrapper (`tg wrap`).
+Shipped: evidence gate, repro fingerprint (threads/mmap/cache), flake triage
+with root-cause ranking and systemic co-occurrence clustering, EvalOps Lite
+(`tg eval`), reusable action, tagged releases with prebuilt binaries.
+
+Next: `tg wrap` (agent output capture), `tg sign` (Ed25519 attestation),
+SARIF rules metadata, timing-based cause rules, VS Code extension.
 - Hardening path (no behavior change): BLAKE3 file hashing, SQLite evidence
   store (replacing JSONL), libgit2 diff (replacing `git` shell-out),
   tree-sitter symbol refs, GoogleTest unit suite.

@@ -340,6 +340,42 @@ def main():
     check("trend names both evals",
           "pass-all" in p.stdout and "fail-exit" in p.stdout, p.stdout[:300])
 
+    # --- 12. systemic clustering: co-failing pair groups, solo flake does not ---
+    cdir = os.path.join(tmp, "cluster")
+    os.makedirs(cdir)
+    NET = "Connection refused: db:5432"
+    TIMED = "Timed out after 30s waiting for lock"
+    ASSR = "AssertionError: expected true"
+    cruns = [
+        ("c1.xml", {"B": NET, "C": NET, "D": PASS}),
+        ("c2.xml", {"B": NET, "C": NET, "D": ASSR}),
+        ("c3.xml", {"B": NET, "C": NET, "D": PASS}),
+        ("c4.xml", {"B": PASS, "C": PASS, "D": TIMED}),
+    ]
+    for name, specs in cruns:
+        cases = []
+        for tname, res in specs.items():
+            if res is None:
+                cases.append(f'<testcase classname="S" name="{tname}" time="0.01"/>')
+            else:
+                cases.append(
+                    f'<testcase classname="S" name="{tname}" time="0.01">'
+                    f"<failure message=\"{res}\">{res} here</failure></testcase>"
+                )
+        write(os.path.join(cdir, name),
+              '<?xml version="1.0"?><testsuites><testsuite name="s" tests="3">'
+              + "".join(cases) + "</testsuite></testsuites>")
+    for name, _ in cruns:
+        p = run(tg, "flake", "--junit", name, "--history", "chist.jsonl",
+                "--out", "cq.yml", "--clusters-out", "clusters.json", cwd=cdir)
+        check(f"cluster {name} exit 0", p.returncode == 0, p.stderr)
+    cl = json.load(open(os.path.join(cdir, "clusters.json"), encoding="utf-8"))
+    groups = [sorted(g["tests"]) for g in cl.get("clusters", [])]
+    check("B+C systemic cluster", ["S.B", "S.C"] in groups, str(groups))
+    check("D not clustered", all("S.D" not in g for g in groups), str(groups))
+    bc = next(g for g in cl["clusters"] if sorted(g["tests"]) == ["S.B", "S.C"])
+    check("cluster cause network", bc.get("cause") == "network", str(bc))
+
     print(f"\n{len(FAILURES)} failures in {tmp}")
     return 1 if FAILURES else 0
 

@@ -14,6 +14,7 @@
 #include "eval/eval.h"
 #include "evidence/claims.h"
 #include "evidence/policy.h"
+#include "flake/cluster.h"
 #include "evidence/sarif.h"
 #include "evidence/verifier.h"
 #include "flake/junit.h"
@@ -370,7 +371,8 @@ int cmdFlake(const std::vector<std::string>& args) {
         std::cout << "Usage: tg flake --junit results.xml [...] "
                      "[--history .trustgate/flake-history.jsonl]\n"
                      "               [--out quarantine.yml] [--min-runs 3] [--max-runs 500]\n"
-                     "               [--ttl-days 14]\n";
+                     "               [--ttl-days 14] [--clusters-out clusters.json]\n"
+                     "               [--min-sim 0.5]\n";
         return 0;
     }
     std::vector<std::string> junitPaths = optAll(p, "junit");
@@ -434,6 +436,73 @@ int cmdFlake(const std::vector<std::string>& args) {
     for (const QuarantineEntry& e : quarantined) {
         std::cout << "  ~ " << e.id << " rate=" << e.flakeRate << " runs=" << e.runs
                   << " cause=" << e.category << " (" << e.confidence << ")\n";
+    }
+
+    // Systemic clustering over the retained history (same file just updated).
+    double minSim = 0.5;
+    {
+        std::string ms = optOnce(p, "min-sim", "");
+        if (!ms.empty()) {
+            try {
+                minSim = std::stod(ms);
+            } catch (...) {
+                std::cerr << "invalid --min-sim (need 0 < sim <= 1)\n";
+                return 1;
+            }
+            if (minSim <= 0.0 || minSim > 1.0) {
+                std::cerr << "invalid --min-sim (need 0 < sim <= 1)\n";
+                return 1;
+            }
+        }
+    }
+    std::vector<std::string> histLines;
+    if (fileExists(historyPath)) {
+        try {
+            std::string ht = readFile(historyPath);
+            std::istringstream hin(ht);
+            std::string hl;
+            while (std::getline(hin, hl)) {
+                if (!hl.empty() && hl.back() == '\r') hl.pop_back();
+                if (hl.find_first_not_of(" \t") == std::string::npos) continue;
+                histLines.push_back(hl);
+            }
+        } catch (...) {
+            // History already validated on write; a torn read just skips clustering.
+        }
+    }
+    std::vector<Cluster> clusters = computeClusters(histLines, minSim);
+    std::cout << "clusters: " << clusters.size() << " systemic group"
+              << (clusters.size() == 1 ? "" : "s") << "\n";
+    for (const Cluster& c : clusters) {
+        std::cout << "  # [";
+        for (std::size_t i = 0; i < c.members.size(); ++i) {
+            if (i > 0) std::cout << ", ";
+            std::cout << c.members[i];
+        }
+        std::cout << "] together " << c.runsTogether << "/" << c.runsTotal
+                  << " runs, suspected " << c.cause << " (" << c.confidence << ")\n";
+    }
+    std::string clustersOut = optOnce(p, "clusters-out", "");
+    if (!clustersOut.empty()) {
+        JsonValue croot = JsonValue::makeObject();
+        JsonValue carr = JsonValue::makeArray();
+        for (const Cluster& c : clusters) {
+            JsonValue o = JsonValue::makeObject();
+            JsonValue m = JsonValue::makeArray();
+            for (const std::string& id : c.members) m.array.push_back(JsonValue::makeString(id));
+            o.object["tests"] = m;
+            o.object["runs_together"] = JsonValue::makeNumber(c.runsTogether);
+            o.object["runs_total"] = JsonValue::makeNumber(c.runsTotal);
+            o.object["cause"] = JsonValue::makeString(c.cause);
+            o.object["confidence"] = JsonValue::makeNumber(c.confidence);
+            carr.array.push_back(o);
+        }
+        croot.object["clusters"] = carr;
+        ensureParentDir(clustersOut);
+        if (!writeFile(clustersOut, toJson(croot, true) + "\n")) {
+            std::cerr << "cannot write clusters file: " + clustersOut + "\n";
+            return 1;
+        }
     }
     return 0;
 }
