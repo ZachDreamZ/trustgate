@@ -138,7 +138,7 @@ runs:
         DEST="$RUNNER_TEMP/tg-rel"
         rm -rf "$DEST" && mkdir -p "$DEST/x"
         curl -sSL --fail -o "$DEST/pkg" "$URL"
-        cmake -E tar xf "$DEST/pkg" -C "$DEST/x"
+        cmake -E chdir "$DEST/x" cmake -E tar xf "$DEST/pkg"
         FOUND=$(find "$DEST/x" \( -name tg -o -name tg.exe \) -type f | head -1)
         if [ -z "$FOUND" ]; then echo "no tg binary inside $ASSET" >&2; exit 1; fi
         if [ "$RUNNER_OS" != "Windows" ]; then chmod +x "$FOUND"; fi
