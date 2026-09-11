@@ -17,9 +17,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      # windows-latest images do not guarantee a discoverable full VS
+      # instance, so drive MSVC via Ninja (preinstalled) instead of the
+      # "Visual Studio 17 2022" generator (needs VS discovery).
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Configure (Windows)
         if: runner.os == 'Windows'
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Configure (Linux)
         if: runner.os != 'Windows'
