@@ -54,13 +54,13 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          STAGE="dist/${{ matrix.stage }}"
-          rm -rf dist && mkdir -p "$STAGE"
-          cp "${{ matrix.bin }}" LICENSE README.md "$STAGE/"
+          STAGE="${{ matrix.stage }}"
+          rm -rf dist && mkdir -p "dist/$STAGE"
+          cp "${{ matrix.bin }}" LICENSE README.md "dist/$STAGE/"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cmake -E tar cf "${{ matrix.asset }}" --format=zip -- "$STAGE"
+            cmake -E chdir dist cmake -E tar cf "../${{ matrix.asset }}" --format=zip -- "$STAGE"
           else
-            cmake -E tar cfz "${{ matrix.asset }}" -- "$STAGE"
+            cmake -E chdir dist cmake -E tar cfz "../${{ matrix.asset }}" -- "$STAGE"
           fi
           ls -la "${{ matrix.asset }}"
 

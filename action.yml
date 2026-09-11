@@ -27,6 +27,13 @@ inputs:
     description: Git ref of ZachDreamZ/trustgate to build when source-dir is empty.
     required: false
     default: main
+  release-tag:
+    description: >-
+      Download a prebuilt tg from this GitHub release tag instead of building
+      (e.g. 'v0.1.0'). Skips checkout/configure/build; instant on runners.
+      Takes precedence over source-dir/tool-ref, but not over binary.
+    required: false
+    default: ''
   working-directory:
     description: Directory holding claims/policy/junit files; verdict outputs land here too.
     required: false
@@ -73,13 +80,13 @@ runs:
   using: composite
   steps:
     - name: Set up MSVC (Windows)
-      if: runner.os == 'Windows' && inputs.binary == ''
+      if: runner.os == 'Windows' && inputs.binary == '' && inputs.release-tag == ''
       uses: ilammy/msvc-dev-cmd@v1
       with:
         arch: x64
 
     - name: Resolve tool source
-      if: inputs.binary == ''
+      if: inputs.binary == '' && inputs.release-tag == ''
       id: src
       shell: bash
       env:
@@ -94,7 +101,7 @@ runs:
         echo "path=$SRC" >> "$GITHUB_OUTPUT"
 
     - name: Check out TrustGate
-      if: inputs.binary == '' && inputs.source-dir == ''
+      if: inputs.binary == '' && inputs.release-tag == '' && inputs.source-dir == ''
       uses: actions/checkout@v4
       with:
         repository: ZachDreamZ/trustgate
@@ -102,14 +109,33 @@ runs:
         path: .trustgate-dist
 
     - name: Configure
-      if: inputs.binary == ''
+      if: inputs.binary == '' && inputs.release-tag == ''
       shell: bash
       run: cmake -S "${{ steps.src.outputs.path }}" -B "${{ steps.src.outputs.path }}/build" -G Ninja -DCMAKE_BUILD_TYPE=Release
 
     - name: Build
-      if: inputs.binary == ''
+      if: inputs.binary == '' && inputs.release-tag == ''
       shell: bash
       run: cmake --build "${{ steps.src.outputs.path }}/build" --config Release
+
+    - name: Download release binary
+      if: inputs.binary == '' && inputs.release-tag != ''
+      id: rel
+      shell: bash
+      env:
+        TG_RELEASE_TAG: ${{ inputs.release-tag }}
+      run: |
+        if [ "$RUNNER_OS" = "Windows" ]; then ASSET="tg-windows-x64.zip"; else ASSET="tg-linux-x64.tar.gz"; fi
+        URL="https://github.com/${{ github.action_repository }}/releases/download/$TG_RELEASE_TAG/$ASSET"
+        DEST="$RUNNER_TEMP/tg-rel"
+        rm -rf "$DEST" && mkdir -p "$DEST/x"
+        curl -sSL --fail -o "$DEST/pkg" "$URL"
+        cmake -E tar xf "$DEST/pkg" -C "$DEST/x"
+        FOUND=$(find "$DEST/x" \( -name tg -o -name tg.exe \) -type f | head -1)
+        if [ -z "$FOUND" ]; then echo "no tg binary inside $ASSET" >&2; exit 1; fi
+        if [ "$RUNNER_OS" != "Windows" ]; then chmod +x "$FOUND"; fi
+        echo "bin=$FOUND" >> "$GITHUB_OUTPUT"
+        echo "downloaded $ASSET ($FOUND)"
 
     - name: Gate
       id: gate
@@ -117,6 +143,7 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       env:
         TG_BINARY: ${{ inputs.binary }}
+        TG_RELEASE_BIN: ${{ steps.rel.outputs.bin }}
         TG_SRC: ${{ steps.src.outputs.path }}
         TG_CLAIMS: ${{ inputs.claims }}
         TG_JUNIT: ${{ inputs.junit }}
@@ -128,6 +155,7 @@ runs:
         TG_SARIF: ${{ inputs.sarif }}
       run: |
         BIN="$TG_BINARY"
+        if [ -z "$BIN" ] && [ -n "$TG_RELEASE_BIN" ]; then BIN="$TG_RELEASE_BIN"; fi
         if [ -z "$BIN" ]; then BIN="$TG_SRC/build/tg"; fi
         case "$BIN" in
           /*|[A-Za-z]:*) ;;

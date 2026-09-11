@@ -105,3 +105,30 @@ jobs:
       - name: Assert PASS verdict
         shell: bash
         run: test "${{ steps.tg.outputs.verdict }}" = "PASS"
+
+  action-test-release:
+    # Validates the release-download fast path (no build at all) against the
+    # latest published release. Bump release-tag when cutting a new release.
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run action (release download)
+        id: tg
+        uses: ./
+        with:
+          release-tag: v0.1.0
+          working-directory: action-test
+          claims: claims.json
+          policy: policy.json
+          out: verdict.json
+          sarif: ''
+
+      - name: Assert PASS verdict (release)
+        shell: bash
+        run: test "${{ steps.tg.outputs.verdict }}" = "PASS"

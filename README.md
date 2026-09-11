@@ -140,6 +140,8 @@ See [BENCHMARKS.md](BENCHMARKS.md) for methodology and latest numbers
 
 Inputs: `binary` (prebuilt `tg`, skips the source build), `source-dir`
 (build an existing checkout, e.g. `'.'` for self-hosting), `tool-ref`,
+`release-tag` (download a prebuilt `tg` from a published release instead
+of building — fastest, e.g. `release-tag: v0.1.0`),
 `working-directory`, `junit`, `policy`, `quarantine`, `lenient`,
 `fail-on-deny`, `out`, `sarif`. Output: `verdict`
 (`PASS` / `PASS_WITH_WARNINGS` / `DENY`). The exit code is 2 on DENY unless
