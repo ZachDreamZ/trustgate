@@ -1,8 +1,11 @@
 #include "evidence/verifier.h"
 
+#include <filesystem>
+
 #include "core/fsutil.h"
 
 namespace tg {
+namespace fs = std::filesystem;
 namespace {
 
 bool isAbsPath(const std::string& p) {
@@ -11,12 +14,31 @@ bool isAbsPath(const std::string& p) {
     return p.size() > 1 && p[1] == ':';  // Windows drive letter
 }
 
-std::string joinRepo(const std::string& root, const std::string& ref) {
-    if (isAbsPath(ref)) return ref;
-    std::string r = root;
-    while (!r.empty() && (r.back() == '/' || r.back() == '\\')) r.pop_back();
-    if (r.empty() || r == ".") return ref;
-    return r + "/" + ref;
+bool resolveRepoRelative(const std::string& root, const std::string& ref,
+                         std::string& full) {
+    if (ref.empty() || isAbsPath(ref)) return false;
+
+    std::error_code ec;
+    fs::path rootPath = pathFromUtf8(root.empty() ? "." : root);
+    rootPath = fs::weakly_canonical(rootPath, ec);
+    if (ec) return false;
+
+    fs::path candidate = rootPath / pathFromUtf8(ref);
+    candidate = fs::weakly_canonical(candidate, ec);
+    if (ec) return false;
+
+    fs::path rel = candidate.lexically_relative(rootPath);
+    if (rel.empty()) {
+        if (candidate != rootPath) return false;
+    } else if (rel.is_absolute()) {
+        return false;
+    }
+    for (const fs::path& part : rel) {
+        if (part == "..") return false;
+    }
+
+    full = pathToUtf8(candidate);
+    return !full.empty();
 }
 
 bool containsId(const std::vector<std::string>& list, const std::string& id) {
@@ -58,11 +80,18 @@ VerifyReport verifyClaims(const std::vector<Claim>& claims, const Policy& policy
         for (const std::string& ref : c.files) {
             FileRef fr;
             if (!parseFileRef(ref, fr)) {
-                add("bad-file-ref", c.id, "claim '" + c.id + "': malformed file ref '" + ref + "'",
+                add("bad-file-ref", c.id,
+                    "claim '" + c.id + "': malformed file ref '" + ref + "'", true);
+                continue;
+            }
+            std::string full;
+            if (!resolveRepoRelative(opts.repoRoot, fr.path, full)) {
+                add("outside-repo", c.id,
+                    "claim '" + c.id + "': cited file escapes repository root '" +
+                        fr.path + "'",
                     true);
                 continue;
             }
-            std::string full = joinRepo(opts.repoRoot, fr.path);
             if (!fileExists(full)) {
                 add("missing-file", c.id,
                     "claim '" + c.id + "': cited file not found '" + fr.path + "'", true);
@@ -121,7 +150,14 @@ VerifyReport verifyClaims(const std::vector<Claim>& claims, const Policy& policy
             add("uncited-artifacts", c.id, "claim '" + c.id + "' cites no artifacts", true);
         }
         for (const std::string& a : c.artifacts) {
-            std::string full = joinRepo(opts.repoRoot, a);
+            std::string full;
+            if (!resolveRepoRelative(opts.repoRoot, a, full)) {
+                add("outside-repo", c.id,
+                    "claim '" + c.id + "': cited artifact escapes repository root '" +
+                        a + "'",
+                    true);
+                continue;
+            }
             if (!fileExists(full)) {
                 add("missing-artifact", c.id,
                     "claim '" + c.id + "': cited artifact not found '" + a + "'", true);
