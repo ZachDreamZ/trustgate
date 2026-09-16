@@ -1,0 +1,21 @@
+# Default owner
+* @ZachDreamZ
+
+# Supply chain and release surface
+/.github/workflows/ @ZachDreamZ
+/.github/dependabot.yml @ZachDreamZ
+/action.yml @ZachDreamZ
+/CMakeLists.txt @ZachDreamZ
+
+# Trust and integrity boundaries
+/src/core/ @ZachDreamZ
+/src/attest/ @ZachDreamZ
+/src/evidence/ @ZachDreamZ
+/src/eval/ @ZachDreamZ
+/src/repro/ @ZachDreamZ
+/src/flake/ @ZachDreamZ
+/schemas/ @ZachDreamZ
+
+# Security tests and disclosure policy
+/tests/ @ZachDreamZ
+/SECURITY.md @ZachDreamZ
