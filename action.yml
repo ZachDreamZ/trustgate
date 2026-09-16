@@ -40,6 +40,14 @@ inputs:
       Takes precedence over source-dir/tool-ref, but not over binary.
     required: false
     default: ''
+  release-sha256:
+    description: >-
+      Optional expected SHA-256 for the selected release archive. Use this for
+      legacy releases without a published .sha256 sidecar. When omitted, the
+      action downloads <asset>.sha256 and fails closed if it is unavailable or
+      does not match.
+    required: false
+    default: ''
   working-directory:
     description: Directory holding claims/policy/junit files; verdict outputs land here too.
     required: false
@@ -124,26 +132,54 @@ runs:
       shell: bash
       run: cmake --build "${{ steps.src.outputs.path }}/build" --config Release
 
-    - name: Download release binary
+    - name: Download and verify release binary
       if: inputs.binary == '' && inputs.release-tag != ''
       id: rel
       shell: bash
       env:
         TG_RELEASE_TAG: ${{ inputs.release-tag }}
         TG_TOOL_REPO: ${{ inputs.tool-repo }}
+        TG_RELEASE_SHA256: ${{ inputs.release-sha256 }}
       run: |
         if [ "$RUNNER_OS" = "Windows" ]; then ASSET="tg-windows-x64.zip"; else ASSET="tg-linux-x64.tar.gz"; fi
         URL="https://github.com/$TG_TOOL_REPO/releases/download/$TG_RELEASE_TAG/$ASSET"
+        CHECKSUM_URL="$URL.sha256"
         echo "downloading $URL"
         DEST="$RUNNER_TEMP/tg-rel"
         rm -rf "$DEST" && mkdir -p "$DEST/x"
         curl -sSL --fail -o "$DEST/pkg" "$URL"
+
+        EXPECTED="$TG_RELEASE_SHA256"
+        if [ -z "$EXPECTED" ]; then
+          echo "downloading checksum $CHECKSUM_URL"
+          curl -sSL --fail -o "$DEST/pkg.sha256" "$CHECKSUM_URL" || {
+            echo "release checksum unavailable; refusing to execute unverified asset" >&2
+            exit 1
+          }
+          EXPECTED=$(awk 'NR==1 {print $1}' "$DEST/pkg.sha256")
+        fi
+        case "$EXPECTED" in
+          ''|*[!0-9A-Fa-f]*) echo "invalid SHA-256 value for $ASSET" >&2; exit 1 ;;
+        esac
+        if [ "${#EXPECTED}" -ne 64 ]; then
+          echo "invalid SHA-256 length for $ASSET" >&2
+          exit 1
+        fi
+        ACTUAL=$(cmake -E sha256sum "$DEST/pkg" | awk '{print $1}')
+        if [ "${ACTUAL,,}" != "${EXPECTED,,}" ]; then
+          echo "SHA-256 mismatch for $ASSET" >&2
+          echo "expected: $EXPECTED" >&2
+          echo "actual:   $ACTUAL" >&2
+          exit 1
+        fi
+        echo "verified SHA-256 for $ASSET: $ACTUAL"
+
         cmake -E chdir "$DEST/x" cmake -E tar xf "$DEST/pkg"
         FOUND=$(find "$DEST/x" \( -name tg -o -name tg.exe \) -type f | head -1)
         if [ -z "$FOUND" ]; then echo "no tg binary inside $ASSET" >&2; exit 1; fi
         if [ "$RUNNER_OS" != "Windows" ]; then chmod +x "$FOUND"; fi
         echo "bin=$FOUND" >> "$GITHUB_OUTPUT"
-        echo "downloaded $ASSET ($FOUND)"
+        echo "downloaded and verified $ASSET ($FOUND)"
 
     - name: Gate
       id: gate
