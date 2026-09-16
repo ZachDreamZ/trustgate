@@ -2,9 +2,9 @@
 
 // Environment reproducibility fingerprint.
 // Walks a directory (sorted, deterministic), hashing relative path + size +
-// contents (FNV-1a-64 v0.1; BLAKE3 upgrade path), plus toolchain probes and
-// selected env vars. Excludes volatile state (.git, build outputs,
-// .trustgate run outputs) so the ID is stable across runs.
+// contents with SHA-256, plus toolchain probes and selected env vars. Excludes
+// volatile state (.git, build outputs, .trustgate run outputs) so the ID is
+// stable across runs.
 
 #include <cstdint>
 #include <map>
@@ -18,11 +18,13 @@ namespace tg {
 struct FileEntry {
     std::string path;  // relative, '/' separators
     uint64_t size = 0;
-    uint64_t hash = 0;
+    std::string hash;  // 64 lowercase hex chars (SHA-256)
 };
 
 struct Fingerprint {
-    std::string id;  // 16 hex chars
+    int formatVersion = 2;
+    std::string hashAlgorithm = "sha256";
+    std::string id;  // 64 lowercase hex chars (SHA-256)
     std::string os;
     std::string created;
     std::vector<FileEntry> files;
@@ -59,7 +61,9 @@ const std::size_t kMaxSkipPaths = 50;
 FingerprintResult computeFingerprint(const FingerprintOptions& opts);
 
 JsonValue fingerprintToJson(const Fingerprint& fp);
-// Throws JsonError / std::runtime_error on invalid input.
+// Throws JsonError / std::runtime_error on invalid or unsupported input.
+// Legacy v1 (FNV-1a-64) fingerprints are rejected explicitly; recompute them
+// with a current TrustGate binary rather than silently reinterpreting hashes.
 Fingerprint fingerprintFromJson(const JsonValue& v);
 
 struct FpDiff {
