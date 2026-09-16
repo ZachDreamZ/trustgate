@@ -9,9 +9,11 @@ on:
 
 jobs:
   build:
-    # Least privilege: checkout needs read, asset upload needs write.
     permissions:
       contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     strategy:
       matrix:
         include:
@@ -51,7 +53,7 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
 
-      - name: Package
+      - name: Package and checksum
         shell: bash
         run: |
           STAGE="${{ matrix.stage }}"
@@ -62,10 +64,18 @@ jobs:
           else
             cmake -E chdir dist cmake -E tar cfz "../${{ matrix.asset }}" -- "$STAGE"
           fi
-          ls -la "${{ matrix.asset }}"
+          cmake -E sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          cat "${{ matrix.asset }}.sha256"
 
-      - name: Upload release asset
+      - name: Generate build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ matrix.asset }}
+
+      - name: Upload release asset and checksum
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.asset }}
+          files: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
           generate_release_notes: true
