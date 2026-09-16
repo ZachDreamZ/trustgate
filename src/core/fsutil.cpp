@@ -4,7 +4,6 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
-#include <iomanip>
 #include <sstream>
 #include <stdexcept>
 
@@ -67,30 +66,6 @@ bool writeFile(const std::string& path, const std::string& data) {
     out.write(data.data(), static_cast<std::streamsize>(data.size()));
     out.close();
     return static_cast<bool>(out);
-}
-
-uint64_t fnv1a64(const void* data, std::size_t len) {
-    const unsigned char* p = static_cast<const unsigned char*>(data);
-    uint64_t h = 14695981039346656037ULL;
-    for (std::size_t i = 0; i < len; ++i) {
-        h ^= static_cast<uint64_t>(p[i]);
-        h *= 1099511628211ULL;
-    }
-    return h;
-}
-
-uint64_t hashCombine(uint64_t a, uint64_t b) {
-    // SplitMix64-style mix of b into a.
-    uint64_t z = b + 0x9E3779B97F4A7C15ULL;
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-    return a ^ (z ^ (z >> 31));
-}
-
-std::string toHex16(uint64_t v) {
-    std::ostringstream oss;
-    oss << std::hex << std::setw(16) << std::setfill('0') << v;
-    return oss.str();
 }
 
 uint64_t fileSize(const std::string& path) {

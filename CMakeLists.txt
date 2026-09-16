@@ -26,6 +26,11 @@ if(Python3_FOUND)
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tests/smoke.py"
             --tg "$<TARGET_FILE:tg>")
   set_tests_properties(smoke PROPERTIES TIMEOUT 180)
+
+  add_test(NAME fingerprint-crypto
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tests/fingerprint_crypto.py"
+            --tg "$<TARGET_FILE:tg>")
+  set_tests_properties(fingerprint-crypto PROPERTIES TIMEOUT 60)
 else()
-  message(STATUS "Python3 interpreter not found - smoke test not registered. Run tests/smoke.py manually.")
+  message(STATUS "Python3 interpreter not found - Python test suites not registered. Run tests manually.")
 endif()

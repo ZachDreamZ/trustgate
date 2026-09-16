@@ -1,7 +1,6 @@
 #pragma once
 
-// File IO + hashing utilities. v0.1 uses FNV-1a-64 (fast, stdlib-only).
-// Upgrade path (no API change for callers of fileIdentity): BLAKE3.
+// File IO and UTF-8-safe path utilities.
 //
 // PATH ENCODING: all narrow-string paths are UTF-8. On Windows the Win32
 // narrow filesystem API uses the ANSI codepage (and narrow path::string()
@@ -31,12 +30,6 @@ bool dirExists(const std::string& path);
 std::string readFile(const std::string& path);
 bool writeFile(const std::string& path, const std::string& data);
 
-uint64_t fnv1a64(const void* data, std::size_t len);
-inline uint64_t fnv1a64(const std::string& s) {
-    return fnv1a64(s.data(), s.size());
-}
-uint64_t hashCombine(uint64_t a, uint64_t b);
-std::string toHex16(uint64_t v);
 uint64_t fileSize(const std::string& path);
 
 // "YYYY-MM-DDTHH:MM:SSZ" (UTC). Returns "" on failure (never throws).

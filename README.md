@@ -144,6 +144,12 @@ encoding — prefer ASCII paths for `--path`/`--repo` when scripting.
 every skip is listed in the output (never silent). On Windows, paths past
 the OS 260-char limit are reported as skips.
 
+Fingerprint format v2 uses full SHA-256 digests for every file and for the
+canonical fingerprint ID. The JSON records `"version": 2` and
+`"hash_algorithm": "sha256"`. Legacy v1 fingerprints are rejected with an
+explicit migration error; recompute them with a current `tg fingerprint`
+rather than mixing non-equivalent hash formats.
+
 ### claims.json
 
 ```json
@@ -170,7 +176,7 @@ tests degrade to warnings when the policy allows it.
 src/main.cpp                 CLI dispatch
 src/cli/commands.*           init|gate|fingerprint|flake|eval|sign|verify|wrap
 src/core/json.*              minimal JSON parser/serializer (sufficient subset)
-src/core/fsutil.*            file IO, FNV-1a-64 hashing (BLAKE3 upgrade path)
+src/core/fsutil.*            file IO + UTF-8 path helpers
 src/core/mmap.*              memory-mapped file reads (Windows + POSIX)
 src/core/proc.*              best-effort process capture for toolchain probes
 src/attest/sha256.*          FIPS 180-4 SHA-256, stdlib-only
@@ -180,28 +186,29 @@ src/evidence/claims.*        claims loader + file-ref grammar
 src/evidence/verifier.*      citation checker -> findings + verdict
 src/evidence/sarif.*         minimal SARIF 2.1.0 writer
 src/eval/eval.*              deterministic eval scenarios + runner
-src/repro/fingerprint.*      directory fingerprint + compare/diff + hash cache
+src/repro/fingerprint.*      SHA-256 directory fingerprint + compare/diff + cache
 src/flake/junit.*            tolerant JUnit XML scanner (captures failure text)
 src/flake/quarantine.*       JSONL history, flake scoring, quarantine.yml
 src/flake/category.*         heuristic root-cause classifier
 src/flake/cluster.*          systemic co-occurrence clustering
 tests/smoke.py               end-to-end CTest smoke (fixture repo in tmpdir)
+tests/fingerprint_crypto.py  SHA-256 v2 format/integrity regression suite
 schemas/policy.schema.json   policy JSON Schema (draft-07)
 .github/workflows/ci.yml     windows-latest + ubuntu-latest
 ```
 
 ## Roadmap
 
-Shipped: evidence gate, repro fingerprint (threads/mmap/cache), flake triage
-with root-cause ranking and systemic co-occurrence clustering, EvalOps Lite
-(`tg eval`), HMAC-SHA256 attestations (`tg sign` / `tg verify`), command
+Shipped: evidence gate, SHA-256 repro fingerprint (threads/mmap/cache), flake
+triage with root-cause ranking and systemic co-occurrence clustering, EvalOps
+Lite (`tg eval`), HMAC-SHA256 attestations (`tg sign` / `tg verify`), command
 capture (`tg wrap` feeding `tg gate`), reusable action, tagged releases with
 prebuilt binaries.
 
 Next: SARIF rules metadata, timing-based cause rules, VS Code extension.
-- Hardening path (no behavior change): BLAKE3 file hashing, SQLite evidence
-  store (replacing JSONL), libgit2 diff (replacing `git` shell-out),
-  tree-sitter symbol refs, GoogleTest unit suite.
+- Hardening path (no behavior change): SQLite evidence store (replacing JSONL),
+  libgit2 diff (replacing `git` shell-out), tree-sitter symbol refs,
+  GoogleTest unit suite.
 
 ## Benchmarks
 
@@ -232,7 +239,7 @@ push — see `dogfood/` and `.github/workflows/ci.yml`.
 
 ## Contributing
 
-Keep it stdlib-only until v1.0. Every new check needs a `tests/smoke.py`
+Keep it stdlib-only until v1.0. Every new check needs a focused regression
 scenario. Run `ctest` before pushing.
 
 ## License
