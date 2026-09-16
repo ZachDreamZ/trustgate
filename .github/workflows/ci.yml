@@ -129,22 +129,28 @@ jobs:
         run: test "${{ steps.tg.outputs.verdict }}" = "PASS"
 
   action-test-release:
-    # Validates the release-download fast path (no build at all) against the
-    # latest published release. Bump release-tag when cutting a new release.
+    # Validates the release-download fast path against v0.3.0. This legacy
+    # release predates checksum sidecars, so its GitHub-published digests are
+    # supplied explicitly. New releases verify their .sha256 sidecars by default.
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            sha256: e951af49a6d78bce6956ecc31dce7d633f6557f90a4896f55d6622976458c8b8
+          - os: ubuntu-latest
+            sha256: add6a3caeb7fc31b1f0d25a5e936fb4f3946fb26b3e7c8ed26c9f73d3adf0705
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run action (release download)
+      - name: Run action (verified legacy release download)
         id: tg
         uses: ./
         with:
           release-tag: v0.3.0
+          release-sha256: ${{ matrix.sha256 }}
           working-directory: action-test
           claims: claims.json
           policy: policy.json
@@ -154,3 +160,20 @@ jobs:
       - name: Assert PASS verdict (release)
         shell: bash
         run: test "${{ steps.tg.outputs.verdict }}" = "PASS"
+
+      - name: Reject mismatched release checksum
+        id: bad_digest
+        continue-on-error: true
+        uses: ./
+        with:
+          release-tag: v0.3.0
+          release-sha256: 0000000000000000000000000000000000000000000000000000000000000000
+          working-directory: action-test
+          claims: claims.json
+          policy: policy.json
+          out: bad-verdict.json
+          sarif: ''
+
+      - name: Assert checksum mismatch failed closed
+        shell: bash
+        run: test "${{ steps.bad_digest.outcome }}" = "failure"
