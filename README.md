@@ -41,6 +41,32 @@ Download a prebuilt binary from
 and README), or build from source below. Releases are cut from `v*` tags,
 kept in sync with the project version.
 
+Release archives are published with a matching `.sha256` sidecar and a GitHub
+artifact provenance attestation. The reusable action verifies the checksum
+before extracting or executing a downloaded release and fails closed when
+verification material is missing or does not match. For older releases that
+predate checksum sidecars, callers must provide the exact `release-sha256`.
+
+### Verify a release independently
+
+For a release that includes checksum sidecars:
+
+```sh
+TAG=vX.Y.Z
+ASSET=tg-linux-x64.tar.gz
+curl -fLO "https://github.com/ZachDreamZ/trustgate/releases/download/$TAG/$ASSET"
+curl -fLO "https://github.com/ZachDreamZ/trustgate/releases/download/$TAG/$ASSET.sha256"
+EXPECTED=$(awk 'NR==1 {print $1}' "$ASSET.sha256")
+ACTUAL=$(cmake -E sha256sum "$ASSET" | awk '{print $1}')
+test "$EXPECTED" = "$ACTUAL"
+
+gh attestation verify "$ASSET" -R ZachDreamZ/trustgate
+```
+
+The checksum check verifies the bytes you downloaded; `gh attestation verify`
+independently verifies the GitHub/Sigstore build provenance associated with
+that artifact.
+
 ## 5-minute walkthrough (prebuilt binary)
 
 In an empty dir, describe what an agent claims to have done:
@@ -196,7 +222,8 @@ See [BENCHMARKS.md](BENCHMARKS.md) for methodology and latest numbers
 Inputs: `binary` (prebuilt `tg`, skips the source build), `source-dir`
 (build an existing checkout, e.g. `'.'` for self-hosting), `tool-ref`,
 `release-tag` (download a prebuilt `tg` from a published release instead
-of building — fastest, e.g. `release-tag: v0.1.0`),
+of building — fastest, e.g. `release-tag: v0.1.0`), `release-sha256`
+(optional explicit digest for a legacy release without a `.sha256` sidecar),
 `working-directory`, `junit`, `policy`, `quarantine`, `lenient`,
 `fail-on-deny`, `out`, `sarif`. Output: `verdict`
 (`PASS` / `PASS_WITH_WARNINGS` / `DENY`). The exit code is 2 on DENY unless
