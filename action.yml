@@ -95,7 +95,7 @@ runs:
   steps:
     - name: Set up MSVC (Windows)
       if: runner.os == 'Windows' && inputs.binary == '' && inputs.release-tag == ''
-      uses: ilammy/msvc-dev-cmd@v1
+      uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
       with:
         arch: x64
 
@@ -116,7 +116,7 @@ runs:
 
     - name: Check out TrustGate
       if: inputs.binary == '' && inputs.release-tag == '' && inputs.source-dir == ''
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         repository: ZachDreamZ/trustgate
         ref: ${{ inputs.tool-ref }}
