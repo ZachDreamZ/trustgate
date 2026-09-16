@@ -193,8 +193,11 @@ src/flake/category.*         heuristic root-cause classifier
 src/flake/cluster.*          systemic co-occurrence clustering
 tests/smoke.py               end-to-end CTest smoke (fixture repo in tmpdir)
 tests/fingerprint_crypto.py  SHA-256 v2 format/integrity regression suite
+tests/gate_security.py       adversarial gate/path-boundary regression suite
+tests/eval_schema_security.py malformed EvalOps/schema regression suite
+tests/attestation_security.py sign/verify tamper regression suite
 schemas/policy.schema.json   policy JSON Schema (draft-07)
-.github/workflows/ci.yml     windows-latest + ubuntu-latest
+.github/workflows/ci.yml     windows-latest + ubuntu-latest + sanitizers
 ```
 
 ## Roadmap
@@ -236,6 +239,12 @@ of building — fastest, e.g. `release-tag: v0.1.0`), `release-sha256`
 (`PASS` / `PASS_WITH_WARNINGS` / `DENY`). The exit code is 2 on DENY unless
 `lenient` or `fail-on-deny: 'false'`. This repo dogfoods the action on every
 push — see `dogfood/` and `.github/workflows/ci.yml`.
+
+## Security
+
+Please report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
+Do not include exploit details, secrets, proof-of-concept payloads, or affected-user
+data in public issues, discussions, pull requests, or commits.
 
 ## Contributing
 
