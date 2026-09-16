@@ -12,6 +12,7 @@
 #include <thread>
 #include <tuple>
 
+#include "attest/sha256.h"
 #include "core/fsutil.h"
 #include "core/json.h"
 #include "core/mmap.h"
@@ -53,36 +54,58 @@ std::string osName() {
 #endif
 }
 
-unsigned long long parseHex64(const std::string& s) {
-    if (s.size() != 16) throw std::runtime_error("bad hash hex: " + s);
-    unsigned long long v = 0;
-    for (char c : s) {
-        v <<= 4;
-        if (c >= '0' && c <= '9') {
-            v |= static_cast<unsigned long long>(c - '0');
-        } else if (c >= 'a' && c <= 'f') {
-            v |= static_cast<unsigned long long>(c - 'a' + 10);
-        } else if (c >= 'A' && c <= 'F') {
-            v |= static_cast<unsigned long long>(c - 'A' + 10);
-        } else {
-            throw std::runtime_error("bad hash hex: " + s);
-        }
+std::string digestHex(const std::array<uint8_t, 32>& digest) {
+    static const char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.resize(64);
+    for (std::size_t i = 0; i < digest.size(); ++i) {
+        out[i * 2] = kHex[(digest[i] >> 4) & 0x0f];
+        out[i * 2 + 1] = kHex[digest[i] & 0x0f];
     }
-    return v;
+    return out;
 }
 
-}  // namespace
+std::string sha256Hex(const void* data, std::size_t len) {
+    return digestHex(sha256(data, len));
+}
 
-namespace {
+std::string sha256Hex(const std::string& data) {
+    return sha256Hex(data.data(), data.size());
+}
+
+bool isSha256Hex(const std::string& s) {
+    if (s.size() != 64) return false;
+    for (char c : s) {
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void appendCanonicalField(std::string& out, const std::string& name,
+                          const std::string& value) {
+    out += std::to_string(name.size());
+    out.push_back(':');
+    out += name;
+    out.push_back('=');
+    out += std::to_string(value.size());
+    out.push_back(':');
+    out += value;
+    out.push_back('\n');
+}
 
 // Hash-cache helpers. Entries are keyed by relative path; a hit requires an
 // exact (size, mtime-ticks) match, mtime stored as a decimal string (JSON
 // doubles cannot hold 64-bit timestamps exactly; values may be negative).
 // Corrupt/version-mismatched caches start fresh; cache I/O never fails a run.
 
-const char* kCacheAlgo = "fnv1a64-1";
+const char* kCacheAlgo = "sha256-1";
+const double kCacheVersion = 2.0;
 
-using CacheMap = std::map<std::string, std::tuple<uint64_t, long long, uint64_t>>;
+using CacheMap =
+    std::map<std::string, std::tuple<uint64_t, long long, std::string>>;
 
 CacheMap loadHashCache(const std::string& path) {
     CacheMap out;
@@ -90,7 +113,7 @@ CacheMap loadHashCache(const std::string& path) {
     try {
         JsonValue root = parseJson(readFile(path));
         if (!root.isObject()) return out;
-        if (root.getNumber("version", 0.0) != 1.0) return out;
+        if (root.getNumber("version", 0.0) != kCacheVersion) return out;
         if (root.getString("algo", "") != kCacheAlgo) return out;
         if (!root.has("entries")) return out;
         const JsonValue& entries = root.at("entries");
@@ -100,29 +123,17 @@ CacheMap loadHashCache(const std::string& path) {
             double sizeNum = kv.second.getNumber("size", -1.0);
             std::string mtimeStr = kv.second.getString("mtime_ticks", "");
             std::string hex = kv.second.getString("hash", "");
-            if (sizeNum < 0.0 || sizeNum > 9.0e15 || mtimeStr.empty() || hex.size() != 16) {
+            if (sizeNum < 0.0 || sizeNum > 9.0e15 || mtimeStr.empty() ||
+                !isSha256Hex(hex)) {
                 continue;
             }
             char* end = nullptr;
             long long mtime = std::strtoll(mtimeStr.c_str(), &end, 10);
             if (end == nullptr || *end != '\0') continue;
-            uint64_t h = 0;
-            bool bad = false;
-            for (char c : hex) {
-                h <<= 4;
-                if (c >= '0' && c <= '9') {
-                    h |= static_cast<uint64_t>(c - '0');
-                } else if (c >= 'a' && c <= 'f') {
-                    h |= static_cast<uint64_t>(c - 'a' + 10);
-                } else if (c >= 'A' && c <= 'F') {
-                    h |= static_cast<uint64_t>(c - 'A' + 10);
-                } else {
-                    bad = true;
-                    break;
-                }
-            }
-            if (bad) continue;
-            out[kv.first] = std::make_tuple(static_cast<uint64_t>(sizeNum), mtime, h);
+            std::transform(hex.begin(), hex.end(), hex.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            out[kv.first] =
+                std::make_tuple(static_cast<uint64_t>(sizeNum), mtime, hex);
         }
     } catch (...) {
         // Corrupt cache starts fresh.
@@ -132,14 +143,16 @@ CacheMap loadHashCache(const std::string& path) {
 
 bool saveHashCache(const std::string& path, const CacheMap& cache) {
     JsonValue root = JsonValue::makeObject();
-    root.object["version"] = JsonValue::makeNumber(1.0);
+    root.object["version"] = JsonValue::makeNumber(kCacheVersion);
     root.object["algo"] = JsonValue::makeString(kCacheAlgo);
     JsonValue entries = JsonValue::makeObject();
     for (const auto& kv : cache) {
         JsonValue e = JsonValue::makeObject();
-        e.object["size"] = JsonValue::makeNumber(static_cast<double>(std::get<0>(kv.second)));
-        e.object["mtime_ticks"] = JsonValue::makeString(std::to_string(std::get<1>(kv.second)));
-        e.object["hash"] = JsonValue::makeString(toHex16(std::get<2>(kv.second)));
+        e.object["size"] =
+            JsonValue::makeNumber(static_cast<double>(std::get<0>(kv.second)));
+        e.object["mtime_ticks"] =
+            JsonValue::makeString(std::to_string(std::get<1>(kv.second)));
+        e.object["hash"] = JsonValue::makeString(std::get<2>(kv.second));
         entries.object[kv.first] = e;
     }
     root.object["entries"] = entries;
@@ -147,6 +160,10 @@ bool saveHashCache(const std::string& path, const CacheMap& cache) {
     std::string tmp = path + ".tmp";
     if (!writeFile(tmp, toJson(root))) return false;
     std::error_code ec;
+#if defined(_WIN32)
+    fs::remove(pathFromUtf8(path), ec);
+    ec.clear();
+#endif
     fs::rename(pathFromUtf8(tmp), pathFromUtf8(path), ec);
     return !ec;
 }
@@ -156,28 +173,29 @@ bool saveHashCache(const std::string& path, const CacheMap& cache) {
 FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
     FingerprintResult result;
     Fingerprint& fp = result.fp;
+    fp.formatVersion = 2;
+    fp.hashAlgorithm = "sha256";
     fp.os = osName();
     fp.created = utcNowIso();
 
     struct Target {
         std::string rel;   // relative, '/' separators
-        std::string full;  // absolute-ish path for reading
+        std::string full;  // UTF-8 path for reading
         uint64_t size = 0;
         // Opaque file_clock ticks. The epoch is implementation-defined and
-        // the value may even be negative (observed with libstdc++
-        // file_clock); only equality across runs matters, so stat success
-        // is tracked separately instead of overloading a sentinel value.
+        // the value may even be negative; only equality across runs matters.
         long long mtimeTicks = 0;
         bool haveStat = false;
     };
+
     std::vector<Target> targets;
     std::error_code ec;
-    fs::path rootPath(opts.root);
+    fs::path rootPath = pathFromUtf8(opts.root);
     if (!fs::exists(rootPath, ec)) {
         result.warnings.push_back("root does not exist: " + opts.root);
     } else {
-        fs::recursive_directory_iterator it(rootPath,
-                                            fs::directory_options::skip_permission_denied, ec);
+        fs::recursive_directory_iterator it(
+            rootPath, fs::directory_options::skip_permission_denied, ec);
         fs::recursive_directory_iterator end;
         auto noteSkip = [&](const std::string& display) {
             ++result.skipped;
@@ -203,7 +221,7 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
                 continue;
             }
             if (!it->is_regular_file(ec) || ec) {
-                noteSkip(pathToUtf8(p));  // symlinks, sockets, etc. are out of scope
+                noteSkip(pathToUtf8(p));
                 ec.clear();
                 continue;
             }
@@ -222,14 +240,11 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
             if (szEc) t.size = 0;
             auto ft = it->last_write_time(tmEc);
             if (!tmEc) {
-                // Coarsen to 100ns ticks: lossless on Windows (FILETIME
-                // native) and keeps values small everywhere else. The raw
-                // file_clock epoch is implementation-defined, so the result
-                // is treated as opaque (see Target).
                 using ticks100ns =
                     std::chrono::duration<long long, std::ratio<1, 10000000>>;
-                t.mtimeTicks = std::chrono::duration_cast<ticks100ns>(ft.time_since_epoch())
-                                   .count();
+                t.mtimeTicks =
+                    std::chrono::duration_cast<ticks100ns>(ft.time_since_epoch())
+                        .count();
                 t.haveStat = true;
             }
             targets.push_back(t);
@@ -238,20 +253,12 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
     std::sort(targets.begin(), targets.end(),
               [](const Target& a, const Target& b) { return a.rel < b.rel; });
 
-    // Hash cache: exact (size, mtime-ns) hits skip I/O entirely.
-    // Best effort: corrupt/missing cache starts fresh, never fails the run.
     CacheMap cache;
     bool cacheUsable = opts.useCache && !opts.cachePath.empty();
-    if (cacheUsable) {
-        cache = loadHashCache(opts.cachePath);
-    }
+    if (cacheUsable) cache = loadHashCache(opts.cachePath);
 
-    // Hash contents with a portable std::thread pool (no TBB needed for
-    // <execution> policies, so Linux CI stays dependency-free).
-    // Order-independent: each file hashes alone; results land by index,
-    // and the ID mixes them in sorted order afterwards.
-    // Files are read via memory mapping (zero-copy page-cache access);
-    // cache hits skip I/O entirely.
+    // Hash contents with a portable std::thread pool. Each file is independent;
+    // results land by index and are mixed into the canonical ID in sorted order.
     std::vector<FileEntry> hashed(targets.size());
     std::vector<char> ready(targets.size(), 0);
     std::vector<char> fromCache(targets.size(), 0);
@@ -268,6 +275,7 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
             workers = static_cast<unsigned>(targets.size());
         }
     }
+
     auto hashWorker = [&]() {
         while (true) {
             std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
@@ -285,18 +293,19 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
                     continue;
                 }
             }
+
             MappedFile mf;
             if (mf.map(t.full)) {
                 hashed[i].path = t.rel;
                 hashed[i].size = static_cast<uint64_t>(mf.size());
-                hashed[i].hash = fnv1a64(mf.data(), mf.size());
+                hashed[i].hash = sha256Hex(mf.data(), mf.size());
                 ready[i] = 1;
             } else {
                 try {
                     std::string data = readFile(t.full);
                     hashed[i].path = t.rel;
                     hashed[i].size = static_cast<uint64_t>(data.size());
-                    hashed[i].hash = fnv1a64(data);
+                    hashed[i].hash = sha256Hex(data);
                     ready[i] = 1;
                 } catch (...) {
                     skippedCount.fetch_add(1, std::memory_order_relaxed);
@@ -308,6 +317,7 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
             }
         }
     };
+
     if (workers == 1) {
         hashWorker();
     } else {
@@ -315,18 +325,18 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
         for (unsigned w = 0; w < workers; ++w) pool.emplace_back(hashWorker);
         for (std::thread& t : pool) t.join();
     }
+
     for (std::size_t i = 0; i < hashed.size(); ++i) {
         if (ready[i]) fp.files.push_back(hashed[i]);
     }
     result.skipped = skippedCount.load();
 
     if (cacheUsable) {
-        // Refresh: current results overwrite stale entries; deleted files drop.
         CacheMap fresh;
         for (std::size_t i = 0; i < hashed.size(); ++i) {
             if (ready[i] && targets[i].haveStat) {
-                fresh[targets[i].rel] =
-                    std::make_tuple(hashed[i].size, targets[i].mtimeTicks, hashed[i].hash);
+                fresh[targets[i].rel] = std::make_tuple(
+                    hashed[i].size, targets[i].mtimeTicks, hashed[i].hash);
             }
         }
         if (!saveHashCache(opts.cachePath, fresh)) {
@@ -336,20 +346,21 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
             for (char c : fromCache) hits += c;
             if (hits > 0) {
                 std::ostringstream note;
-                note << "hash cache: " << hits << "/" << targets.size() << " reused";
+                note << "hash cache: " << hits << "/" << targets.size()
+                     << " reused";
                 result.warnings.push_back(note.str());
             }
         }
     }
 
-    // Toolchain probes: best effort, never fail the fingerprint.
     if (opts.probeToolchain) {
         std::string git = probeFirstLine("git --version");
         if (!git.empty()) fp.toolchain["git"] = git;
         std::string cmake = probeFirstLine("cmake --version");
         if (!cmake.empty()) {
             std::string::size_type nl = cmake.find_first_of("\r\n");
-            fp.toolchain["cmake"] = (nl == std::string::npos) ? cmake : cmake.substr(0, nl);
+            fp.toolchain["cmake"] =
+                (nl == std::string::npos) ? cmake : cmake.substr(0, nl);
         }
     }
 
@@ -362,74 +373,130 @@ FingerprintResult computeFingerprint(const FingerprintOptions& opts) {
         }
     }
 
-    // Canonical ID over sorted content + toolchain + env.
-    uint64_t h = 14695981039346656037ULL;
-    auto mixStr = [&](const std::string& s) {
-        h = hashCombine(h, fnv1a64(s));
-    };
+    // Canonical v2 ID: explicit length-prefixing removes concatenation
+    // ambiguity. `os` and `created` stay metadata (as in v1) so identical
+    // inputs with --no-probe produce the same ID across platforms and runs.
+    std::string canonical;
+    appendCanonicalField(canonical, "format", "2");
+    appendCanonicalField(canonical, "hash_algorithm", fp.hashAlgorithm);
     for (const FileEntry& e : fp.files) {
-        mixStr(e.path);
-        h = hashCombine(h, e.size);
-        h = hashCombine(h, e.hash);
+        appendCanonicalField(canonical, "file.path", e.path);
+        appendCanonicalField(canonical, "file.size", std::to_string(e.size));
+        appendCanonicalField(canonical, "file.sha256", e.hash);
     }
     for (const auto& kv : fp.toolchain) {
-        mixStr(kv.first);
-        mixStr(kv.second);
+        appendCanonicalField(canonical, "toolchain.key", kv.first);
+        appendCanonicalField(canonical, "toolchain.value", kv.second);
     }
     for (const auto& kv : fp.env) {
-        mixStr(kv.first);
-        mixStr(kv.second);
+        appendCanonicalField(canonical, "env.key", kv.first);
+        appendCanonicalField(canonical, "env.value", kv.second);
     }
-    fp.id = toHex16(h);
+    fp.id = sha256Hex(canonical);
     return result;
 }
 
 JsonValue fingerprintToJson(const Fingerprint& fp) {
     JsonValue root = JsonValue::makeObject();
+    root.object["version"] =
+        JsonValue::makeNumber(static_cast<double>(fp.formatVersion));
+    root.object["hash_algorithm"] = JsonValue::makeString(fp.hashAlgorithm);
     root.object["id"] = JsonValue::makeString(fp.id);
     root.object["os"] = JsonValue::makeString(fp.os);
     root.object["created"] = JsonValue::makeString(fp.created);
+
     JsonValue files = JsonValue::makeArray();
     for (const FileEntry& e : fp.files) {
         JsonValue o = JsonValue::makeObject();
         o.object["path"] = JsonValue::makeString(e.path);
         o.object["size"] = JsonValue::makeNumber(static_cast<double>(e.size));
-        o.object["hash"] = JsonValue::makeString(toHex16(e.hash));
+        o.object["hash"] = JsonValue::makeString(e.hash);
         files.array.push_back(o);
     }
     root.object["files"] = files;
+
     JsonValue tc = JsonValue::makeObject();
-    for (const auto& kv : fp.toolchain) tc.object[kv.first] = JsonValue::makeString(kv.second);
+    for (const auto& kv : fp.toolchain) {
+        tc.object[kv.first] = JsonValue::makeString(kv.second);
+    }
     root.object["toolchain"] = tc;
+
     JsonValue env = JsonValue::makeObject();
-    for (const auto& kv : fp.env) env.object[kv.first] = JsonValue::makeString(kv.second);
+    for (const auto& kv : fp.env) {
+        env.object[kv.first] = JsonValue::makeString(kv.second);
+    }
     root.object["env"] = env;
     return root;
 }
 
 Fingerprint fingerprintFromJson(const JsonValue& v) {
-    if (!v.isObject()) throw std::runtime_error("fingerprint root must be an object");
+    if (!v.isObject()) {
+        throw std::runtime_error("fingerprint root must be an object");
+    }
+
+    double version = v.getNumber("version", 0.0);
+    if (version == 0.0) {
+        std::string legacyId = v.getString("id", "");
+        if (legacyId.size() == 16) {
+            throw std::runtime_error(
+                "legacy fingerprint format v1 (FNV-1a-64) is unsupported; "
+                "recompute it with the current tg fingerprint command");
+        }
+        throw std::runtime_error("fingerprint is missing supported format version 2");
+    }
+    if (version != 2.0) {
+        throw std::runtime_error("unsupported fingerprint format version: " +
+                                 std::to_string(static_cast<int>(version)));
+    }
+
     Fingerprint fp;
+    fp.formatVersion = 2;
+    fp.hashAlgorithm = v.getString("hash_algorithm", "");
+    if (fp.hashAlgorithm != "sha256") {
+        throw std::runtime_error("unsupported fingerprint hash algorithm: " +
+                                 fp.hashAlgorithm);
+    }
     fp.id = v.getString("id", "");
     fp.os = v.getString("os", "");
     fp.created = v.getString("created", "");
-    if (fp.id.empty()) throw std::runtime_error("fingerprint is missing 'id'");
+    if (!isSha256Hex(fp.id)) {
+        throw std::runtime_error("fingerprint 'id' must be a 64-hex SHA-256 digest");
+    }
+
     if (v.has("files")) {
         const JsonValue& arr = v.at("files");
         if (!arr.isArray()) throw std::runtime_error("'files' must be an array");
         for (const JsonValue& item : arr.array) {
+            if (!item.isObject()) {
+                throw std::runtime_error("file entry must be an object");
+            }
             FileEntry e;
             e.path = item.getString("path", "");
             e.size = static_cast<uint64_t>(item.getNumber("size", 0.0));
-            e.hash = parseHex64(item.getString("hash", "0000000000000000"));
-            if (e.path.empty()) throw std::runtime_error("file entry is missing 'path'");
+            e.hash = item.getString("hash", "");
+            if (e.path.empty()) {
+                throw std::runtime_error("file entry is missing 'path'");
+            }
+            if (!isSha256Hex(e.hash)) {
+                throw std::runtime_error("file entry hash for '" + e.path +
+                                         "' must be a 64-hex SHA-256 digest");
+            }
+            std::transform(e.hash.begin(), e.hash.end(), e.hash.begin(),
+                           [](unsigned char c) {
+                               return static_cast<char>(std::tolower(c));
+                           });
             fp.files.push_back(e);
         }
     }
-    auto getMap = [&](const char* key, std::map<std::string, std::string>& dst) {
+
+    auto getMap = [&](const char* key,
+                      std::map<std::string, std::string>& dst) {
         if (!v.has(key)) return;
         const JsonValue& o = v.at(key);
-        if (!o.isObject()) throw std::runtime_error(std::string("'") + key + "' must be an object");
+        if (!o.isObject()) {
+            throw std::runtime_error(std::string("'") + key +
+                                     "' must be an object");
+        }
         for (const auto& kv : o.object) {
             if (kv.second.isString()) dst[kv.first] = kv.second.str;
         }
@@ -441,9 +508,10 @@ Fingerprint fingerprintFromJson(const JsonValue& v) {
 
 FpDiff diffFingerprints(const Fingerprint& oldFp, const Fingerprint& newFp) {
     FpDiff d;
-    std::map<std::string, std::pair<uint64_t, uint64_t>> a, b;
+    std::map<std::string, std::pair<uint64_t, std::string>> a, b;
     for (const FileEntry& e : oldFp.files) a[e.path] = {e.size, e.hash};
     for (const FileEntry& e : newFp.files) b[e.path] = {e.size, e.hash};
+
     for (const auto& kv : b) {
         auto it = a.find(kv.first);
         if (it == a.end()) {
