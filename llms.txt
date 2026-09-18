@@ -1,0 +1,39 @@
+# TrustGate
+
+> TrustGate is a local-first C++17 trust gate for AI-written code. It verifies agent claims against exact file citations, passing tests, runtime artifacts, reproducibility fingerprints, and policy before allowing a change to pass.
+
+TrustGate is designed for coding agents, CI systems, and maintainers who need deterministic, offline, auditable verification of AI-generated code changes.
+
+## Primary documentation
+
+- [README](https://raw.githubusercontent.com/ZachDreamZ/trustgate/main/README.md): Project overview, installation, CLI usage, architecture, CI integration, and roadmap.
+- [AGENTS.md](https://raw.githubusercontent.com/ZachDreamZ/trustgate/main/AGENTS.md): Build commands, coding-agent rules, security constraints, and completion criteria.
+- [SECURITY.md](https://raw.githubusercontent.com/ZachDreamZ/trustgate/main/SECURITY.md): Vulnerability reporting and supported-version policy.
+- [Benchmarks](https://raw.githubusercontent.com/ZachDreamZ/trustgate/main/BENCHMARKS.md): Performance methodology and measurements.
+
+## Machine-readable contracts
+
+- [Policy schema](https://raw.githubusercontent.com/ZachDreamZ/trustgate/main/schemas/policy.schema.json): TrustGate policy JSON Schema.
+- [Eval schema](https://raw.githubusercontent.com/ZachDreamZ/trustgate/main/schemas/eval.schema.json): Eval scenario JSON Schema.
+- [GitHub Action](https://raw.githubusercontent.com/ZachDreamZ/trustgate/main/action.yml): Reusable GitHub Action interface and inputs.
+
+## Tests and examples
+
+- [Smoke test](https://raw.githubusercontent.com/ZachDreamZ/trustgate/main/tests/smoke.py): End-to-end integration coverage.
+- [Gate security tests](https://raw.githubusercontent.com/ZachDreamZ/trustgate/main/tests/gate_security.py): Evidence/path-boundary fail-closed regressions.
+- [Fingerprint crypto tests](https://raw.githubusercontent.com/ZachDreamZ/trustgate/main/tests/fingerprint_crypto.py): SHA-256 fingerprint integrity and migration regressions.
+- [Eval security tests](https://raw.githubusercontent.com/ZachDreamZ/trustgate/main/tests/eval_schema_security.py): Malformed eval/schema handling.
+- [Attestation security tests](https://raw.githubusercontent.com/ZachDreamZ/trustgate/main/tests/attestation_security.py): Signature and tamper regressions.
+- [Eval examples](https://github.com/ZachDreamZ/trustgate/tree/main/evals): Live deterministic eval scenarios.
+- [Dogfood policy](https://github.com/ZachDreamZ/trustgate/tree/main/dogfood): TrustGate verifying its own repository.
+
+## Work queue
+
+- [Open issues](https://github.com/ZachDreamZ/trustgate/issues?q=is%3Aissue%20is%3Aopen): Active implementation backlog.
+- [Good first issues](https://github.com/ZachDreamZ/trustgate/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22): Smaller contributor tasks.
+- [Pull requests](https://github.com/ZachDreamZ/trustgate/pulls): Active proposed changes.
+
+## Repository
+
+- [Source tree](https://github.com/ZachDreamZ/trustgate): Canonical repository.
+- [Releases](https://github.com/ZachDreamZ/trustgate/releases): Tagged binaries, checksums, and provenance.
