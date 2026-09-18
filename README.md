@@ -6,6 +6,11 @@
 
 Single static binary. Local-first. Code never leaves your machine.
 
+
+Agent/crawler entry points: [AGENTS.md](AGENTS.md) for coding-agent instructions,
+[llms.txt](llms.txt) for an LLM-friendly project index, and
+[docs/agent-discovery.md](docs/agent-discovery.md) for the repository crawl map.
+
 `tg gate` blocks AI-code merges unless every AI claim cites exact files, tests,
 and runtime artifacts — with environment-reproducibility fingerprinting and
 flake-aware quarantine built in.
