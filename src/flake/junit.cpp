@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <tuple>
 
 namespace tg {
 
@@ -36,6 +37,31 @@ std::string getAttr(const std::string& tag, const std::string& name) {
             return tag.substr(vpos + 1, end - vpos - 1);
         }
         from = pos + 1;
+    }
+}
+
+// Track suite context between testcases without treating <testsuites> as a suite.
+void advanceSuites(const std::string& xml, std::string::size_type from,
+                   std::string::size_type until, std::vector<std::string>& suites) {
+    while (from < until) {
+        auto at = xml.find('<', from);
+        if (at == std::string::npos || at >= until) break;
+        auto end = xml.find('>', at);
+        if (end == std::string::npos || end >= until) break;
+        bool closing = (at + 1 < end && xml[at + 1] == '/');
+        auto nameAt = at + (closing ? 2 : 1);
+        const std::string suiteTag = "testsuite";
+        auto after = nameAt + suiteTag.size();
+        if (xml.compare(nameAt, suiteTag.size(), suiteTag) == 0 && after <= end &&
+            (std::isspace(static_cast<unsigned char>(xml[after])) ||
+             xml[after] == '/' || xml[after] == '>')) {
+            if (closing) {
+                if (!suites.empty()) suites.pop_back();
+            } else if (xml[end - 1] != '/') {
+                suites.push_back(getAttr(xml.substr(at, end - at + 1), "name"));
+            }
+        }
+        from = end + 1;
     }
 }
 
@@ -88,6 +114,8 @@ std::string extractFailureText(const std::string& inner) {
 JUnitReport parseJUnit(const std::string& xml) {
     JUnitReport report;
     std::string::size_type pos = 0;
+    std::string::size_type suitePos = 0;
+    std::vector<std::string> suites;
     const std::string open = "<testcase";
     while (true) {
         std::string::size_type tc = xml.find(open, pos);
@@ -115,11 +143,17 @@ JUnitReport parseJUnit(const std::string& xml) {
         }
         pos = next;
 
+        advanceSuites(xml, suitePos, tc, suites);
+        suitePos = next;
+
         std::string classname = getAttr(tag, "classname");
         std::string name = getAttr(tag, "name");
         if (name.empty()) continue;  // unusable entry
         TestCaseResult tcRes;
         tcRes.id = junitIdentity(classname, name);
+        tcRes.name = name;
+        tcRes.classname = classname;
+        tcRes.suites = suites;
         const std::string timeStr = getAttr(tag, "time");
         if (!timeStr.empty()) tcRes.timeMs = std::strtod(timeStr.c_str(), nullptr) * 1000.0;
         if (hasChild(inner, "failure") || hasChild(inner, "error")) {
@@ -136,6 +170,37 @@ JUnitReport parseJUnit(const std::string& xml) {
         report.cases.push_back(tcRes);
     }
     return report;
+}
+
+std::map<std::string, char> junitTestStatus(const std::vector<TestCaseResult>& cases) {
+    using Identity = std::tuple<std::vector<std::string>, std::string, std::string>;
+    std::map<std::string, std::map<Identity, char>> references;
+    for (const TestCaseResult& tc : cases) {
+        Identity identity{tc.suites, tc.classname, tc.name};
+        auto add = [&](const std::string& ref) {
+            auto& candidates = references[ref];
+            auto it = candidates.find(identity);
+            if (it == candidates.end()) {
+                candidates.emplace(identity, tc.status);
+            } else if (tc.status == 'F' || (tc.status == 'S' && it->second == 'P')) {
+                it->second = tc.status;
+            }
+        };
+        add(tc.name);
+        add(tc.id);
+        std::string suitePath;
+        for (const std::string& suite : tc.suites) {
+            if (suite.empty()) continue;
+            if (!suitePath.empty()) suitePath += ".";
+            suitePath += suite;
+        }
+        if (!suitePath.empty()) add(suitePath + "." + tc.id);
+    }
+    std::map<std::string, char> status;
+    for (const auto& ref : references) {
+        status[ref.first] = ref.second.size() == 1 ? ref.second.begin()->second : 'A';
+    }
+    return status;
 }
 
 }  // namespace tg

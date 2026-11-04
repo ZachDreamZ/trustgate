@@ -38,7 +38,7 @@ struct VerifyReport {
     VerifyStats stats;
 };
 
-// testStatus: JUnit test id -> 'P' | 'F' | 'S' (merged latest run).
+// testStatus: JUnit reference -> 'P' | 'F' | 'S' | 'A' (ambiguous reference).
 // quarantinedIds: ids from quarantine.yml (honored only when policy allows).
 VerifyReport verifyClaims(const std::vector<Claim>& claims, const Policy& policy,
                           const std::map<std::string, char>& testStatus,

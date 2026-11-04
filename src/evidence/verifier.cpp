@@ -124,7 +124,13 @@ VerifyReport verifyClaims(const std::vector<Claim>& claims, const Policy& policy
                     true);
                 continue;
             }
-            if (it->second == 'F') {
+            if (it->second == 'A') {
+                add("ambiguous-test", c.id,
+                    "claim '" + c.id + "': test reference '" + t +
+                        "' matches multiple JUnit tests; cite an unambiguous "
+                        "classname.name or suite-qualified reference",
+                    true);
+            } else if (it->second == 'F') {
                 ++report.stats.failedTests;
                 if (policy.quarantineAllow && containsId(quarantinedIds, t)) {
                     add("quarantined-failure", c.id,

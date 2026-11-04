@@ -77,6 +77,131 @@ JUNIT_ALLPASS = """<?xml version="1.0"?>
 """
 
 
+def check_junit_resolution(tg, root):
+    """Exercise citation resolution through the real gate, including shard merges."""
+    repo = os.path.join(root, "junit-resolution")
+    os.makedirs(repo)
+    write(os.path.join(repo, "policy.json"), json.dumps({
+        "require_file_citation": False, "require_test_citation": True,
+        "require_artifact_citation": False, "quarantine_allow": True,
+    }))
+
+    def testcase(name="Run", classname="", status="P"):
+        child = {"P": "", "F": "<failure/>", "S": "<skipped/>"}[status]
+        return f'<testcase classname="{classname}" name="{name}">{child}</testcase>'
+
+    def suite(name, *cases):
+        return f"<testsuite name='{name}'>" + "".join(cases) + "</testsuite>"
+
+    def gate_case(label, reports, ref, rule=None, extra=(), reverse=False):
+        write(os.path.join(repo, "claims.json"), json.dumps({
+            "claims": [{"id": "J", "text": "JUnit citation", "tests": [ref]}],
+        }))
+        paths = []
+        for i, xml in enumerate(reports):
+            path = f"report-{i}.xml"
+            paths.append(path)
+            write(os.path.join(repo, path), xml)
+        if reverse:
+            paths.reverse()
+        junit_args = [arg for path in paths for arg in ("--junit", path)]
+        p = run(tg, "gate", "--claims", "claims.json", "--policy", "policy.json",
+                "--repo", ".", "--out", "verdict.json", "--sarif", "results.sarif",
+                *junit_args, *extra, cwd=repo)
+        data = json.load(open(os.path.join(repo, "verdict.json"), encoding="utf-8"))
+        expected_warning = rule == "quarantined-failure" or "--lenient" in extra
+        expected_exit = 0 if rule is None or expected_warning else 2
+        expected_verdict = ("PASS_WITH_WARNINGS" if expected_warning else
+                            "PASS" if rule is None else "DENY")
+        findings = data.get("findings", [])
+        expected_rules = [] if rule is None else [rule]
+        check(label, p.returncode == expected_exit and
+              data.get("verdict") == expected_verdict and
+              [f.get("rule") for f in findings] == expected_rules,
+              f"exit={p.returncode}, verdict={data}, stderr={p.stderr}")
+        check(label + " observation count", data.get("stats", {}).get("junit_tests") ==
+              sum(xml.count("<testcase ") for xml in reports), str(data))
+        if rule:
+            severity = "warning" if expected_warning else "error"
+            check(label + " finding severity", len(findings) == 1 and
+                  findings[0].get("severity") == severity)
+            sarif = json.load(open(os.path.join(repo, "results.sarif"), encoding="utf-8"))
+            results = sarif["runs"][0]["results"]
+            check(label + " SARIF rule", len(results) == 1 and
+                  results[0]["ruleId"] == "trustgate/" + rule)
+        return tuple(open(os.path.join(repo, path), "rb").read()
+                     for path in ("verdict.json", "results.sarif"))
+
+    status_rules = {"P": None, "F": "failed-test", "S": "skipped-test"}
+    for status, rule in status_rules.items():
+        for classname in ("", "Auth"):
+            xml = suite("single", testcase(classname=classname, status=status))
+            gate_case(f"unique bare {classname or 'no class'} {status}", [xml], "Run", rule)
+            if classname:
+                gate_case(f"qualified class {status}", [xml], "Auth.Run", rule)
+
+    # Bare duplicates are ambiguous even if every observation passed. Qualified
+    # references still resolve each class/suite to its own P/F/S outcome.
+    for left, right in (("P", "P"), ("P", "F"), ("P", "S"), ("F", "S")):
+        classes = suite("unit", testcase(classname="First", status=left),
+                        testcase(classname="Second", status=right))
+        gate_case(f"duplicate classes {left}{right}", [classes], "Run", "ambiguous-test")
+        gate_case(f"first class {left}{right}", [classes], "First.Run", status_rules[left])
+        gate_case(f"second class {left}{right}", [classes], "Second.Run", status_rules[right])
+        suites = "<testsuites>" + suite("one", testcase(status=left)) + \
+                 suite("two", testcase(status=right)) + "</testsuites>"
+        gate_case(f"duplicate suites {left}{right}", [suites], "Run", "ambiguous-test")
+        gate_case(f"first suite {left}{right}", [suites], "one.Run", status_rules[left])
+        gate_case(f"second suite {left}{right}", [suites], "two.Run", status_rules[right])
+
+    across_suites = [suite("one", testcase(classname="Auth")),
+                     suite("two", testcase(classname="Auth", status="S"))]
+    gate_case("duplicate qualified id across reports", across_suites,
+              "Auth.Run", "ambiguous-test")
+    gate_case("suite and class passing", across_suites, "one.Auth.Run")
+    gate_case("suite and class skipped", across_suites, "two.Auth.Run", "skipped-test")
+    nested = [suite("outer", suite("empty"), suite("inner", testcase(classname="Auth")),
+                    suite("sibling", testcase(classname="Auth", status="F")))]
+    gate_case("nested suite passing", nested, "outer.inner.Auth.Run")
+    gate_case("nested sibling failing", nested, "outer.sibling.Auth.Run", "failed-test")
+
+    # The same logical test repeated in shards remains one candidate, with
+    # F > S > P independently of file order or citation spelling.
+    for statuses, rule in (("PP", None), ("PS", "skipped-test"),
+                           ("PF", "failed-test"), ("SF", "failed-test")):
+        reports = [suite("unit", testcase(classname="Auth", status=s)) for s in statuses]
+        for ref in ("Run", "Auth.Run", "unit.Auth.Run"):
+            label = f"overlapping shards {statuses} {ref}"
+            first = gate_case(label, reports, ref, rule)
+            second = gate_case(label + " reversed", reports, ref, rule, reverse=True)
+            check(label + " deterministic", first == second)
+
+    aliases = [suite("one", testcase(classname="Auth")),
+               suite("two", testcase(name="Auth.Run"))]
+    gate_case("bare alias collides with qualified id", aliases, "Auth.Run", "ambiguous-test")
+    gate_case("qualified collision first suite", aliases, "one.Auth.Run")
+    gate_case("qualified collision second suite", aliases, "two.Auth.Run")
+    dotted = [suite("dots", testcase(name="part.Run", classname="Auth"),
+                    testcase(name="Run", classname="Auth.part", status="F"))]
+    gate_case("dotted qualified collision", dotted, "Auth.part.Run", "ambiguous-test")
+    gate_case("unique dotted bare name", dotted, "part.Run")
+    gate_case("other dotted identity", dotted, "Run", "failed-test")
+    gate_case("unknown test unchanged", aliases, "Absent", "unknown-test")
+
+    write(os.path.join(repo, "quarantine.yml"),
+          "version: 1\nquarantined:\n  - id: Run\n    flake_rate: 0.5\n"
+          "  - id: First.Run\n    flake_rate: 0.5\n")
+    quarantined = [suite("unit", testcase(classname="First", status="F"),
+                         testcase(classname="Second"))]
+    first = gate_case("quarantine cannot resolve ambiguity", quarantined, "Run", "ambiguous-test")
+    gate_case("qualified quarantine unchanged", quarantined, "First.Run", "quarantined-failure")
+    gate_case("lenient ambiguity warns", quarantined, "Run", "ambiguous-test", extra=("--lenient",))
+    swapped = [suite("unit", testcase(classname="Second"),
+                     testcase(classname="First", status="F"))]
+    second = gate_case("testcase order ambiguity", swapped, "Run", "ambiguous-test")
+    check("ambiguous verdict deterministic", first == second)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tg", required=True, help="path to tg binary")
@@ -191,6 +316,8 @@ def main():
         "--quarantine", "quarantine.yml", cwd=repo,
     )
     check("quarantined failure warns", p.returncode == 0, f"got {p.returncode}: {p.stdout}")
+
+    check_junit_resolution(tg, tmp)
 
     # --- 6. fingerprint stability + drift ---
     # Scan only the src/ subtree; outputs live in repo/ root so runs cannot
