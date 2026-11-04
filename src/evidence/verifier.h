@@ -9,6 +9,7 @@
 
 #include "evidence/claims.h"
 #include "evidence/policy.h"
+#include "flake/junit.h"
 
 namespace tg {
 
@@ -38,10 +39,10 @@ struct VerifyReport {
     VerifyStats stats;
 };
 
-// testStatus: JUnit reference -> 'P' | 'F' | 'S' | 'A' (ambiguous reference).
+// testStatus: resolved JUnit status and canonical, unambiguous quarantine id.
 // quarantinedIds: ids from quarantine.yml (honored only when policy allows).
 VerifyReport verifyClaims(const std::vector<Claim>& claims, const Policy& policy,
-                          const std::map<std::string, char>& testStatus,
+                          const std::map<std::string, ResolvedJUnitTest>& testStatus,
                           const std::vector<std::string>& quarantinedIds,
                           const VerifyOptions& opts);
 

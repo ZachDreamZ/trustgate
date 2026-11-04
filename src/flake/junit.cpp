@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <stdexcept>
 #include <tuple>
 
 namespace tg {
@@ -40,50 +41,79 @@ std::string getAttr(const std::string& tag, const std::string& name) {
     }
 }
 
-// Track suite context between testcases without treating <testsuites> as a suite.
-void advanceSuites(const std::string& xml, std::string::size_type from,
-                   std::string::size_type until, std::vector<std::string>& suites) {
-    while (from < until) {
-        auto at = xml.find('<', from);
-        if (at == std::string::npos || at >= until) break;
-        auto end = xml.find('>', at);
-        if (end == std::string::npos || end >= until) break;
-        bool closing = (at + 1 < end && xml[at + 1] == '/');
-        auto nameAt = at + (closing ? 2 : 1);
-        const std::string suiteTag = "testsuite";
-        auto after = nameAt + suiteTag.size();
-        if (xml.compare(nameAt, suiteTag.size(), suiteTag) == 0 && after <= end &&
-            (std::isspace(static_cast<unsigned char>(xml[after])) ||
-             xml[after] == '/' || xml[after] == '>')) {
-            if (closing) {
-                if (!suites.empty()) suites.pop_back();
-            } else if (xml[end - 1] != '/') {
-                suites.push_back(getAttr(xml.substr(at, end - at + 1), "name"));
-            }
+std::string::size_type tagEnd(const std::string& xml, std::string::size_type at) {
+    char quote = 0;
+    for (auto i = at + 1; i < xml.size(); ++i) {
+        char c = xml[i];
+        if (quote) {
+            if (c == quote) quote = 0;
+        } else if (c == '\'' || c == '"') {
+            quote = c;
+        } else if (c == '>') {
+            return i;
         }
-        from = end + 1;
+    }
+    return std::string::npos;
+}
+
+struct XmlTag {
+    std::string::size_type at = 0;
+    std::string::size_type end = 0;
+    std::string name;
+    bool closing = false;
+    bool selfClosing = false;
+};
+
+// Suite nesting, testcase boundaries and statuses share this lexical boundary.
+// Text regions never produce tags, and quoted '>' never ends a tag.
+bool nextTag(const std::string& xml, std::string::size_type& pos, XmlTag& tag) {
+    while (true) {
+        auto at = xml.find('<', pos);
+        if (at == std::string::npos) return false;
+        const char* delimiter = nullptr;
+        std::string::size_type prefix = 0;
+        std::string::size_type suffix = 0;
+        if (xml.compare(at, 4, "<!--") == 0) {
+            delimiter = "-->"; prefix = 4; suffix = 3;
+        } else if (xml.compare(at, 9, "<![CDATA[") == 0) {
+            delimiter = "]]>"; prefix = 9; suffix = 3;
+        } else if (xml.compare(at, 2, "<?") == 0) {
+            delimiter = "?>"; prefix = 2; suffix = 2;
+        }
+        if (delimiter) {
+            auto end = xml.find(delimiter, at + prefix);
+            if (end == std::string::npos) throw std::runtime_error("unterminated XML text region");
+            pos = end + suffix;
+            continue;
+        }
+        auto end = tagEnd(xml, at);
+        if (end == std::string::npos) throw std::runtime_error("unterminated XML tag");
+        tag.at = at;
+        tag.end = end;
+        tag.closing = (at + 1 < end && xml[at + 1] == '/');
+        tag.selfClosing = (xml[end - 1] == '/');
+        auto nameAt = at + (tag.closing ? 2 : 1);
+        auto nameEnd = nameAt;
+        while (nameEnd < end && xml[nameEnd] != '/' &&
+               !std::isspace(static_cast<unsigned char>(xml[nameEnd]))) ++nameEnd;
+        tag.name = xml.substr(nameAt, nameEnd - nameAt);
+        pos = end + 1;
+        return true;
     }
 }
 
-bool hasChild(const std::string& inner, const std::string& child) {
-    return inner.find("<" + child) != std::string::npos;
-}
-
-// message="..." of the first failure/error child plus a whitespace-collapsed
-// excerpt of its body, capped at 300 chars. Empty when no such child exists.
+// The caller selects an actual failure/error tag through nextTag. Keep its
+// message and a whitespace-collapsed body excerpt, capped at 300 chars.
 std::string extractFailureText(const std::string& inner) {
-    std::string::size_type at = inner.find("<failure");
-    if (at == std::string::npos) at = inner.find("<error");
-    if (at == std::string::npos) return "";
-    std::string::size_type tagEnd = inner.find('>', at);
-    if (tagEnd == std::string::npos) return "";
-    std::string tag = inner.substr(at, tagEnd - at + 1);
+    std::string::size_type end = tagEnd(inner, 0);
+    if (end == std::string::npos) return "";
+    std::string tag = inner.substr(0, end + 1);
     std::string out = getAttr(tag, "message");
-    if (tagEnd == 0 || inner[tagEnd - 1] != '/') {
-        std::string::size_type close = inner.find("</", tagEnd);
+    if (end == 0 || inner[end - 1] != '/') {
+        std::string::size_type close = inner.find("</", end);
         std::string body = (close == std::string::npos)
-                               ? inner.substr(tagEnd + 1)
-                               : inner.substr(tagEnd + 1, close - tagEnd - 1);
+                               ? inner.substr(end + 1)
+                               : inner.substr(end + 1, close - end - 1);
         std::string flat;
         bool space = true;  // collapse runs, trim leading
         for (char c : body) {
@@ -114,38 +144,40 @@ std::string extractFailureText(const std::string& inner) {
 JUnitReport parseJUnit(const std::string& xml) {
     JUnitReport report;
     std::string::size_type pos = 0;
-    std::string::size_type suitePos = 0;
     std::vector<std::string> suites;
-    const std::string open = "<testcase";
-    while (true) {
-        std::string::size_type tc = xml.find(open, pos);
-        if (tc == std::string::npos) break;
-        // Avoid matching "<testcases" etc: next char must be space, '/', or '>'.
-        std::string::size_type after = tc + open.size();
-        if (after < xml.size()) {
-            char c = xml[after];
-            if (c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != '/' && c != '>') {
-                pos = after;
-                continue;
+    XmlTag current;
+    while (nextTag(xml, pos, current)) {
+        std::string tag = xml.substr(current.at, current.end - current.at + 1);
+        if (current.name == "testsuite") {
+            if (current.closing) {
+                if (!suites.empty()) suites.pop_back();
+            } else if (!current.selfClosing) {
+                suites.push_back(getAttr(tag, "name"));
             }
+            continue;
         }
-        std::string::size_type tagEnd = xml.find('>', after);
-        if (tagEnd == std::string::npos) break;
-        std::string tag = xml.substr(tc, tagEnd - tc + 1);
-        bool selfClosing = (tagEnd > tc && xml[tagEnd - 1] == '/');
-        std::string inner;
-        std::string::size_type next = tagEnd + 1;
-        if (!selfClosing) {
-            std::string::size_type close = xml.find("</testcase>", next);
-            if (close == std::string::npos) break;
-            inner = xml.substr(next, close - next);
-            next = close + std::string("</testcase>").size();
+        if (current.name != "testcase" || current.closing) continue;
+        char status = 'P';
+        auto failure = std::string::npos;
+        auto error = std::string::npos;
+        if (!current.selfClosing) {
+            bool closed = false;
+            while (nextTag(xml, pos, current)) {
+                if (current.name == "testcase" && current.closing) {
+                    closed = true;
+                    break;
+                }
+                if (current.closing) continue;
+                if (current.name == "failure" || current.name == "error") {
+                    status = 'F';
+                    auto& first = current.name == "failure" ? failure : error;
+                    if (first == std::string::npos) first = current.at;
+                } else if (current.name == "skipped" && status != 'F') {
+                    status = 'S';
+                }
+            }
+            if (!closed) throw std::runtime_error("unterminated JUnit testcase");
         }
-        pos = next;
-
-        advanceSuites(xml, suitePos, tc, suites);
-        suitePos = next;
-
         std::string classname = getAttr(tag, "classname");
         std::string name = getAttr(tag, "name");
         if (name.empty()) continue;  // unusable entry
@@ -156,15 +188,14 @@ JUnitReport parseJUnit(const std::string& xml) {
         tcRes.suites = suites;
         const std::string timeStr = getAttr(tag, "time");
         if (!timeStr.empty()) tcRes.timeMs = std::strtod(timeStr.c_str(), nullptr) * 1000.0;
-        if (hasChild(inner, "failure") || hasChild(inner, "error")) {
-            tcRes.status = 'F';
-            tcRes.failureText = extractFailureText(inner);
+        tcRes.status = status;
+        if (status == 'F') {
+            auto first = failure != std::string::npos ? failure : error;
+            tcRes.failureText = extractFailureText(xml.substr(first, current.at - first));
             ++report.failed;
-        } else if (hasChild(inner, "skipped")) {
-            tcRes.status = 'S';
+        } else if (status == 'S') {
             ++report.skipped;
         } else {
-            tcRes.status = 'P';
             ++report.passed;
         }
         report.cases.push_back(tcRes);
@@ -172,7 +203,7 @@ JUnitReport parseJUnit(const std::string& xml) {
     return report;
 }
 
-std::map<std::string, char> junitTestStatus(const std::vector<TestCaseResult>& cases) {
+std::map<std::string, ResolvedJUnitTest> junitTestStatus(const std::vector<TestCaseResult>& cases) {
     using Identity = std::tuple<std::vector<std::string>, std::string, std::string>;
     std::map<std::string, std::map<Identity, char>> references;
     for (const TestCaseResult& tc : cases) {
@@ -196,9 +227,18 @@ std::map<std::string, char> junitTestStatus(const std::vector<TestCaseResult>& c
         }
         if (!suitePath.empty()) add(suitePath + "." + tc.id);
     }
-    std::map<std::string, char> status;
+    std::map<std::string, ResolvedJUnitTest> status;
     for (const auto& ref : references) {
-        status[ref.first] = ref.second.size() == 1 ? ref.second.begin()->second : 'A';
+        ResolvedJUnitTest resolved;
+        if (ref.second.size() == 1) {
+            const auto& candidate = *ref.second.begin();
+            resolved.status = candidate.second;
+            std::string id = junitIdentity(std::get<1>(candidate.first), std::get<2>(candidate.first));
+            if (references.at(id).size() == 1) resolved.quarantineId = id;
+        } else {
+            resolved.status = 'A';
+        }
+        status[ref.first] = resolved;
     }
     return status;
 }

@@ -93,7 +93,8 @@ def check_junit_resolution(tg, root):
     def suite(name, *cases):
         return f"<testsuite name='{name}'>" + "".join(cases) + "</testsuite>"
 
-    def gate_case(label, reports, ref, rule=None, extra=(), reverse=False):
+    def gate_case(label, reports, ref, rule=None, extra=(), reverse=False,
+                  observations=None, quarantined_used=None):
         write(os.path.join(repo, "claims.json"), json.dumps({
             "claims": [{"id": "J", "text": "JUnit citation", "tests": [ref]}],
         }))
@@ -119,8 +120,13 @@ def check_junit_resolution(tg, root):
               data.get("verdict") == expected_verdict and
               [f.get("rule") for f in findings] == expected_rules,
               f"exit={p.returncode}, verdict={data}, stderr={p.stderr}")
+        if observations is None:
+            observations = sum(xml.count("<testcase ") for xml in reports)
         check(label + " observation count", data.get("stats", {}).get("junit_tests") ==
-              sum(xml.count("<testcase ") for xml in reports), str(data))
+              observations, str(data))
+        if quarantined_used is not None:
+            check(label + " quarantine identity", data.get("stats", {}).get("quarantined_used") ==
+                  quarantined_used, str(data))
         if rule:
             severity = "warning" if expected_warning else "error"
             check(label + " finding severity", len(findings) == 1 and
@@ -200,6 +206,100 @@ def check_junit_resolution(tg, root):
                      testcase(classname="First", status="F"))]
     second = gate_case("testcase order ambiguity", swapped, "Run", "ambiguous-test")
     check("ambiguous verdict deterministic", first == second)
+
+    # Inert XML text cannot change a test's suite or create observations.
+    inert_regions = (
+        "<!-- diagnostic > </testsuite><testsuite name='other'> -->",
+        "<![CDATA[diagnostic > </testsuite><testsuite name='other'>]]>",
+        "<?diagnostic text > </testsuite><testsuite name='other'> ?>",
+    )
+    for i, inert in enumerate(inert_regions):
+        for statuses in ("PF", "FP"):
+            xml = [suite("unit", testcase(classname="Auth", status=statuses[0]),
+                         inert, testcase(classname="Auth", status=statuses[1]))]
+            for ref in ("Run", "Auth.Run", "unit.Auth.Run"):
+                gate_case(f"inert suite text {i} {statuses} {ref}", xml, ref, "failed-test")
+        fake = testcase(name="NotATest")
+        wrapped = ("<!-- > " + fake + " -->", "<![CDATA[ > " + fake + "]]>",
+                   "<?diagnostic > " + fake + " ?>")[i]
+        xml = [suite("unit", wrapped, testcase(classname="Auth"))]
+        gate_case(f"inert testcase text {i}", xml, "unit.Auth.Run", observations=1)
+        gate_case(f"inert testcase absent {i}", xml, "NotATest", "unknown-test", observations=1)
+        inner = ("<!-- > </testcase> <failure/> -->", "<![CDATA[ > </testcase> <failure/> ]]>",
+                 "<?diagnostic > </testcase> <failure/> ?>")[i]
+        xml = [suite("unit", '<testcase classname="Auth" name="Run">' + inner + '</testcase>')]
+        gate_case(f"inert testcase children {i}", xml, "unit.Auth.Run")
+
+    quoted = [suite("unit>detail", testcase(name="Run>detail", classname="Auth>detail", status="F"))]
+    gate_case("quoted tag delimiters", quoted, "unit>detail.Auth>detail.Run>detail", "failed-test")
+
+    # Quarantine IDs belong to resolved tests, not the spelling of a citation.
+    def quarantine(*ids):
+        write(os.path.join(repo, "quarantine.yml"), "version: 1\nquarantined:\n" +
+              "".join(f"  - id: {test_id}\n    flake_rate: 0.5\n" for test_id in ids))
+
+    failing = [suite("unit", testcase(classname="Auth", status="F"))]
+    quarantine("Run", "unit.Auth.Run")
+    for ref in ("Run", "Auth.Run", "unit.Auth.Run"):
+        gate_case(f"unrelated quarantine {ref}", failing, ref, "failed-test", quarantined_used=[])
+    quarantine("Auth.Run")
+    for ref in ("Run", "Auth.Run", "unit.Auth.Run"):
+        gate_case(f"resolved quarantine {ref}", failing, ref, "quarantined-failure",
+                  quarantined_used=["Auth.Run"])
+    quarantine("Run")
+    for ref in ("Run", "unit.Run"):
+        gate_case(f"classless quarantine {ref}", [suite("unit", testcase(status="F"))], ref,
+                  "quarantined-failure", quarantined_used=["Run"])
+    quarantine("Auth.Run")
+    gate_case("quarantine never allows skipped alias", [suite("unit", testcase(classname="Auth", status="S"))],
+              "Run", "skipped-test", quarantined_used=[])
+    gate_case("quarantine identity remains ambiguous", across_suites, "Auth.Run", "ambiguous-test",
+              quarantined_used=[])
+    same_id = [suite("one", testcase(classname="Auth", status="F")),
+               suite("two", testcase(classname="Auth"))]
+    gate_case("ambiguous canonical quarantine denied", same_id, "one.Auth.Run", "failed-test",
+              quarantined_used=[])
+    quarantine("Auth.part.Run")
+    gate_case("dotted canonical quarantine denied", dotted, "Run", "failed-test", quarantined_used=[])
+    quarantine("Run")
+    gate_case("lenient unresolved quarantine warns", failing, "Run", "failed-test", extra=("--lenient",),
+              quarantined_used=[])
+    quarantine("Auth.Run")
+    write(os.path.join(repo, "policy.json"), json.dumps({
+        "require_file_citation": False, "require_test_citation": True,
+        "require_artifact_citation": False, "quarantine_allow": False,
+    }))
+    gate_case("disabled quarantine denies alias", failing, "Run", "failed-test", quarantined_used=[])
+
+    # Incomplete inert regions must fail as input errors, never use partial proof.
+    for ending in ("<!-- unfinished", "<![CDATA[unfinished", "<?diagnostic unfinished"):
+        write(os.path.join(repo, "report-0.xml"), suite("unit", testcase(classname="Auth"), ending))
+        p = run(tg, "gate", "--claims", "claims.json", "--policy", "policy.json",
+                "--junit", "report-0.xml", "--out", "incomplete.json", cwd=repo)
+        check("incomplete XML region rejected " + ending, p.returncode == 1, p.stdout + p.stderr)
+
+    # The shared parser also feeds flake history; retain ordinary diagnostics.
+    diagnostics = (
+        ('<error message="Connection refused"> socket\n unavailable </error>',
+         "F", "Connection refused | socket unavailable"),
+        ('<error message="earlier"/><failure message="assertion"> expected value </failure>',
+         "F", "assertion | expected value"),
+        ('<failure message="expected > actual"> detail </failure>',
+         "F", "expected > actual | detail"),
+        ('<!-- > <failure message="ignored"/> --><error message="actual"/>', "F", "actual"),
+        ('<failure message="limit">' + "x" * 400 + '</failure>', "F", "limit | " + "x" * 300),
+    )
+    for i, (children, status, message) in enumerate(diagnostics):
+        write(os.path.join(repo, "diagnostic.xml"), suite("unit",
+              '<testcase classname="S" name="Diagnostic">' + children + '</testcase>'))
+        p = run(tg, "flake", "--junit", "diagnostic.xml", "--history", "diagnostic-history.jsonl",
+                "--out", "diagnostic-quarantine.yml", cwd=repo)
+        check(f"failure diagnostic flake {i}", p.returncode == 0, p.stderr)
+        history = open(os.path.join(repo, "diagnostic-history.jsonl"), encoding="utf-8").read().splitlines()
+        result = json.loads(history[-1])["results"]["S.Diagnostic"]
+        # Flake history retains at most 200 characters of the parser's excerpt.
+        check(f"failure diagnostic preserved {i}", result["s"] == status and result["m"] == message[:200],
+              str(result))
 
 
 def main():

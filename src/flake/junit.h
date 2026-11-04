@@ -33,9 +33,15 @@ JUnitReport parseJUnit(const std::string& xml);
 
 std::string junitIdentity(const std::string& classname, const std::string& name);
 
+struct ResolvedJUnitTest {
+    char status = 'P';  // 'P' | 'F' | 'S' | 'A' (ambiguous citation)
+    // Canonical flake/quarantine id, empty unless that id is unambiguous too.
+    std::string quarantineId;
+};
+
 // Gate references: bare name, classname.name, and suite path + "." + id.
 // Distinct suite/class/name identities sharing a reference yield 'A' (ambiguous).
 // Repeated observations of one identity merge with worst status F > S > P.
-std::map<std::string, char> junitTestStatus(const std::vector<TestCaseResult>& cases);
+std::map<std::string, ResolvedJUnitTest> junitTestStatus(const std::vector<TestCaseResult>& cases);
 
 }  // namespace tg

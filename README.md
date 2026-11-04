@@ -188,6 +188,12 @@ but quarantined tests degrade to warnings when the policy allows it;
 quarantine cannot resolve an ambiguous citation. `--lenient` retains its
 usual behavior of demoting findings to warnings.
 
+Quarantine matching uses the resolved test's canonical JUnit ID
+(`classname.name`, or `name` without a classname), as emitted by `tg flake`.
+Bare and suite-qualified citations use that same ID, and `quarantined_used`
+reports canonical IDs. An ambiguous canonical ID cannot authorize quarantine;
+use distinct producer metadata before collecting a new quarantine history.
+
 ## Layout
 
 ```text
