@@ -77,6 +77,278 @@ JUNIT_ALLPASS = """<?xml version="1.0"?>
 """
 
 
+def check_junit_resolution(tg, root):
+    """Exercise citation resolution through the real gate, including shard merges."""
+    repo = os.path.join(root, "junit-resolution")
+    os.makedirs(repo)
+    write(os.path.join(repo, "policy.json"), json.dumps({
+        "require_file_citation": False, "require_test_citation": True,
+        "require_artifact_citation": False, "quarantine_allow": True,
+    }))
+
+    def testcase(name="Run", classname="", status="P"):
+        child = {"P": "", "F": "<failure/>", "S": "<skipped/>"}[status]
+        return f'<testcase classname="{classname}" name="{name}">{child}</testcase>'
+
+    def suite(name, *cases):
+        return f"<testsuite name='{name}'>" + "".join(cases) + "</testsuite>"
+
+    def gate_case(label, reports, ref, rule=None, extra=(), reverse=False,
+                  observations=None, quarantined_used=None):
+        write(os.path.join(repo, "claims.json"), json.dumps({
+            "claims": [{"id": "J", "text": "JUnit citation", "tests": [ref]}],
+        }))
+        paths = []
+        for i, xml in enumerate(reports):
+            path = f"report-{i}.xml"
+            paths.append(path)
+            write(os.path.join(repo, path), xml)
+        if reverse:
+            paths.reverse()
+        junit_args = [arg for path in paths for arg in ("--junit", path)]
+        p = run(tg, "gate", "--claims", "claims.json", "--policy", "policy.json",
+                "--repo", ".", "--out", "verdict.json", "--sarif", "results.sarif",
+                *junit_args, *extra, cwd=repo)
+        data = json.load(open(os.path.join(repo, "verdict.json"), encoding="utf-8"))
+        expected_warning = rule == "quarantined-failure" or "--lenient" in extra
+        expected_exit = 0 if rule is None or expected_warning else 2
+        expected_verdict = ("PASS_WITH_WARNINGS" if expected_warning else
+                            "PASS" if rule is None else "DENY")
+        findings = data.get("findings", [])
+        expected_rules = [] if rule is None else [rule]
+        check(label, p.returncode == expected_exit and
+              data.get("verdict") == expected_verdict and
+              [f.get("rule") for f in findings] == expected_rules,
+              f"exit={p.returncode}, verdict={data}, stderr={p.stderr}")
+        if observations is None:
+            observations = sum(xml.count("<testcase ") for xml in reports)
+        check(label + " observation count", data.get("stats", {}).get("junit_tests") ==
+              observations, str(data))
+        if quarantined_used is not None:
+            check(label + " quarantine identity", data.get("stats", {}).get("quarantined_used") ==
+                  quarantined_used, str(data))
+        if rule:
+            severity = "warning" if expected_warning else "error"
+            check(label + " finding severity", len(findings) == 1 and
+                  findings[0].get("severity") == severity)
+            sarif = json.load(open(os.path.join(repo, "results.sarif"), encoding="utf-8"))
+            results = sarif["runs"][0]["results"]
+            check(label + " SARIF rule", len(results) == 1 and
+                  results[0]["ruleId"] == "trustgate/" + rule)
+        return tuple(open(os.path.join(repo, path), "rb").read()
+                     for path in ("verdict.json", "results.sarif"))
+
+    status_rules = {"P": None, "F": "failed-test", "S": "skipped-test"}
+    for status, rule in status_rules.items():
+        for classname in ("", "Auth"):
+            xml = suite("single", testcase(classname=classname, status=status))
+            gate_case(f"unique bare {classname or 'no class'} {status}", [xml], "Run", rule)
+            if classname:
+                gate_case(f"qualified class {status}", [xml], "Auth.Run", rule)
+
+    # Bare duplicates are ambiguous even if every observation passed. Qualified
+    # references still resolve each class/suite to its own P/F/S outcome.
+    for left, right in (("P", "P"), ("P", "F"), ("P", "S"), ("F", "S")):
+        classes = suite("unit", testcase(classname="First", status=left),
+                        testcase(classname="Second", status=right))
+        gate_case(f"duplicate classes {left}{right}", [classes], "Run", "ambiguous-test")
+        gate_case(f"first class {left}{right}", [classes], "First.Run", status_rules[left])
+        gate_case(f"second class {left}{right}", [classes], "Second.Run", status_rules[right])
+        suites = "<testsuites>" + suite("one", testcase(status=left)) + \
+                 suite("two", testcase(status=right)) + "</testsuites>"
+        gate_case(f"duplicate suites {left}{right}", [suites], "Run", "ambiguous-test")
+        gate_case(f"first suite {left}{right}", [suites], "one.Run", status_rules[left])
+        gate_case(f"second suite {left}{right}", [suites], "two.Run", status_rules[right])
+
+    across_suites = [suite("one", testcase(classname="Auth")),
+                     suite("two", testcase(classname="Auth", status="S"))]
+    gate_case("duplicate qualified id across reports", across_suites,
+              "Auth.Run", "ambiguous-test")
+    gate_case("suite and class passing", across_suites, "one.Auth.Run")
+    gate_case("suite and class skipped", across_suites, "two.Auth.Run", "skipped-test")
+    nested = [suite("outer", suite("empty"), suite("inner", testcase(classname="Auth")),
+                    suite("sibling", testcase(classname="Auth", status="F")))]
+    gate_case("nested suite passing", nested, "outer.inner.Auth.Run")
+    gate_case("nested sibling failing", nested, "outer.sibling.Auth.Run", "failed-test")
+
+    # The same logical test repeated in shards remains one candidate, with
+    # F > S > P independently of file order or citation spelling.
+    for statuses, rule in (("PP", None), ("PS", "skipped-test"),
+                           ("PF", "failed-test"), ("SF", "failed-test")):
+        reports = [suite("unit", testcase(classname="Auth", status=s)) for s in statuses]
+        for ref in ("Run", "Auth.Run", "unit.Auth.Run"):
+            label = f"overlapping shards {statuses} {ref}"
+            first = gate_case(label, reports, ref, rule)
+            second = gate_case(label + " reversed", reports, ref, rule, reverse=True)
+            check(label + " deterministic", first == second)
+
+    aliases = [suite("one", testcase(classname="Auth")),
+               suite("two", testcase(name="Auth.Run"))]
+    gate_case("bare alias collides with qualified id", aliases, "Auth.Run", "ambiguous-test")
+    gate_case("qualified collision first suite", aliases, "one.Auth.Run")
+    gate_case("qualified collision second suite", aliases, "two.Auth.Run")
+    dotted = [suite("dots", testcase(name="part.Run", classname="Auth"),
+                    testcase(name="Run", classname="Auth.part", status="F"))]
+    gate_case("dotted qualified collision", dotted, "Auth.part.Run", "ambiguous-test")
+    gate_case("unique dotted bare name", dotted, "part.Run")
+    gate_case("other dotted identity", dotted, "Run", "failed-test")
+    gate_case("unknown test unchanged", aliases, "Absent", "unknown-test")
+
+    write(os.path.join(repo, "quarantine.yml"),
+          "version: 1\nquarantined:\n  - id: Run\n    flake_rate: 0.5\n"
+          "  - id: First.Run\n    flake_rate: 0.5\n")
+    quarantined = [suite("unit", testcase(classname="First", status="F"),
+                         testcase(classname="Second"))]
+    first = gate_case("quarantine cannot resolve ambiguity", quarantined, "Run", "ambiguous-test")
+    gate_case("qualified quarantine unchanged", quarantined, "First.Run", "quarantined-failure")
+    gate_case("lenient ambiguity warns", quarantined, "Run", "ambiguous-test", extra=("--lenient",))
+    swapped = [suite("unit", testcase(classname="Second"),
+                     testcase(classname="First", status="F"))]
+    second = gate_case("testcase order ambiguity", swapped, "Run", "ambiguous-test")
+    check("ambiguous verdict deterministic", first == second)
+
+    # Inert XML text cannot change a test's suite or create observations.
+    inert_regions = (
+        "<!-- diagnostic > </testsuite><testsuite name='other'> -->",
+        "<![CDATA[diagnostic > </testsuite><testsuite name='other'>]]>",
+        "<?diagnostic text > </testsuite><testsuite name='other'> ?>",
+    )
+    for i, inert in enumerate(inert_regions):
+        for statuses in ("PF", "FP"):
+            xml = [suite("unit", testcase(classname="Auth", status=statuses[0]),
+                         inert, testcase(classname="Auth", status=statuses[1]))]
+            for ref in ("Run", "Auth.Run", "unit.Auth.Run"):
+                gate_case(f"inert suite text {i} {statuses} {ref}", xml, ref, "failed-test")
+        fake = testcase(name="NotATest")
+        wrapped = ("<!-- > " + fake + " -->", "<![CDATA[ > " + fake + "]]>",
+                   "<?diagnostic > " + fake + " ?>")[i]
+        xml = [suite("unit", wrapped, testcase(classname="Auth"))]
+        gate_case(f"inert testcase text {i}", xml, "unit.Auth.Run", observations=1)
+        gate_case(f"inert testcase absent {i}", xml, "NotATest", "unknown-test", observations=1)
+        inner = ("<!-- > </testcase> <failure/> -->", "<![CDATA[ > </testcase> <failure/> ]]>",
+                 "<?diagnostic > </testcase> <failure/> ?>")[i]
+        xml = [suite("unit", '<testcase classname="Auth" name="Run">' + inner + '</testcase>')]
+        gate_case(f"inert testcase children {i}", xml, "unit.Auth.Run")
+
+    quoted = [suite("unit>detail", testcase(name="Run>detail", classname="Auth>detail", status="F"))]
+    gate_case("quoted tag delimiters", quoted, "unit>detail.Auth>detail.Run>detail", "failed-test")
+
+    # XML serialization must not change the identity of repeated observations.
+    equivalent_names = (
+        ("unit>detail", "unit&gt;detail", "unit>detail"),
+        ("unit&gt;detail", "unit&#62;detail", "unit>detail"),
+        ("unit&#62;detail", "unit&#x3e;detail", "unit>detail"),
+        ("u&amp;n&lt;i&quot;t&apos;", "u&#38;n&#60;i&#34;t&#39;", 'u&n<i"t\''),
+        ("caf\u00e9", "caf&#233;", "caf\u00e9"),
+        ("\U0001f600", "&#x1F600;", "\U0001f600"),
+        ("unit detail", "unit\r\ndetail", "unit detail"),
+        ("unit&amp;gt;detail", "unit&#38;gt;detail", "unit&gt;detail"),
+    )
+    for i, (left, right, decoded) in enumerate(equivalent_names):
+        for attr in ("suite", "class", "test"):
+            def encoded_case(value, status):
+                sn, cn, tn = (value, "Auth", "Run") if attr == "suite" else (
+                    ("unit", value, "Run") if attr == "class" else ("unit", "Auth", value))
+                return (f'<testsuite name="{sn}"><testcase classname="{cn}" name="{tn}">'
+                        + ("<failure/>" if status == "F" else "") + "</testcase></testsuite>")
+            ref = {"suite": f"{decoded}.Auth.Run", "class": f"unit.{decoded}.Run",
+                   "test": f"unit.Auth.{decoded}"}[attr]
+            reports = [encoded_case(left, "P"), encoded_case(right, "F")]
+            first = gate_case(f"XML identity {i} {attr}", reports, ref, "failed-test")
+            second = gate_case(f"XML identity {i} {attr} reversed", reports, ref,
+                               "failed-test", reverse=True)
+            check(f"XML identity {i} {attr} deterministic", first == second)
+            gate_case(f"XML identity {i} {attr} passing control", [encoded_case(right, "P")], ref)
+
+    for i, space in enumerate((" ", "\t", "\n", "\r", " \t\r\n ")):
+        alternate = (f'<testsuite name{space}={space}\'unit\'>'
+                     f'<testcase classname{space}={space}\'Auth\' name{space}={space}\'Run\'>'
+                     "<failure/></testcase></testsuite>")
+        reports = [suite("unit", testcase(classname="Auth")), alternate]
+        for ref in ("Run", "Auth.Run", "unit.Auth.Run"):
+            gate_case(f"XML attribute whitespace {i} {ref}", reports, ref, "failed-test")
+            gate_case(f"XML attribute whitespace {i} {ref} reversed", reports, ref,
+                      "failed-test", reverse=True)
+
+    # Unsupported/malformed attribute values cannot become partial evidence.
+    for i, value in enumerate(("&unknown;", "&amp", "&#;", "&#x;", "&#-1;", "&#0;",
+                               "&#xD800;", "&#xFFFE;", "&#x110000;",
+                               "&#999999999999999999999999;", "unescaped&value")):
+        write(os.path.join(repo, "invalid.xml"),
+              f'<testsuite name="{value}">' + testcase(classname="Auth") + '</testsuite>')
+        p = run(tg, "gate", "--claims", "claims.json", "--policy", "policy.json",
+                "--junit", "invalid.xml", "--out", "invalid.json", cwd=repo)
+        check(f"invalid XML attribute rejected {i}", p.returncode == 1, p.stdout + p.stderr)
+
+    # Quarantine IDs belong to resolved tests, not the spelling of a citation.
+    def quarantine(*ids):
+        write(os.path.join(repo, "quarantine.yml"), "version: 1\nquarantined:\n" +
+              "".join(f"  - id: {test_id}\n    flake_rate: 0.5\n" for test_id in ids))
+
+    failing = [suite("unit", testcase(classname="Auth", status="F"))]
+    quarantine("Run", "unit.Auth.Run")
+    for ref in ("Run", "Auth.Run", "unit.Auth.Run"):
+        gate_case(f"unrelated quarantine {ref}", failing, ref, "failed-test", quarantined_used=[])
+    quarantine("Auth.Run")
+    for ref in ("Run", "Auth.Run", "unit.Auth.Run"):
+        gate_case(f"resolved quarantine {ref}", failing, ref, "quarantined-failure",
+                  quarantined_used=["Auth.Run"])
+    quarantine("Run")
+    for ref in ("Run", "unit.Run"):
+        gate_case(f"classless quarantine {ref}", [suite("unit", testcase(status="F"))], ref,
+                  "quarantined-failure", quarantined_used=["Run"])
+    quarantine("Auth.Run")
+    gate_case("quarantine never allows skipped alias", [suite("unit", testcase(classname="Auth", status="S"))],
+              "Run", "skipped-test", quarantined_used=[])
+    gate_case("quarantine identity remains ambiguous", across_suites, "Auth.Run", "ambiguous-test",
+              quarantined_used=[])
+    same_id = [suite("one", testcase(classname="Auth", status="F")),
+               suite("two", testcase(classname="Auth"))]
+    gate_case("ambiguous canonical quarantine denied", same_id, "one.Auth.Run", "failed-test",
+              quarantined_used=[])
+    quarantine("Auth.part.Run")
+    gate_case("dotted canonical quarantine denied", dotted, "Run", "failed-test", quarantined_used=[])
+    quarantine("Run")
+    gate_case("lenient unresolved quarantine warns", failing, "Run", "failed-test", extra=("--lenient",),
+              quarantined_used=[])
+    quarantine("Auth.Run")
+    write(os.path.join(repo, "policy.json"), json.dumps({
+        "require_file_citation": False, "require_test_citation": True,
+        "require_artifact_citation": False, "quarantine_allow": False,
+    }))
+    gate_case("disabled quarantine denies alias", failing, "Run", "failed-test", quarantined_used=[])
+
+    # Incomplete inert regions must fail as input errors, never use partial proof.
+    for ending in ("<!-- unfinished", "<![CDATA[unfinished", "<?diagnostic unfinished"):
+        write(os.path.join(repo, "report-0.xml"), suite("unit", testcase(classname="Auth"), ending))
+        p = run(tg, "gate", "--claims", "claims.json", "--policy", "policy.json",
+                "--junit", "report-0.xml", "--out", "incomplete.json", cwd=repo)
+        check("incomplete XML region rejected " + ending, p.returncode == 1, p.stdout + p.stderr)
+
+    # The shared parser also feeds flake history; retain ordinary diagnostics.
+    diagnostics = (
+        ('<error message="Connection refused"> socket\n unavailable </error>',
+         "F", "Connection refused | socket unavailable"),
+        ('<error message="earlier"/><failure message="assertion"> expected value </failure>',
+         "F", "assertion | expected value"),
+        ('<failure message="expected > actual"> detail </failure>',
+         "F", "expected > actual | detail"),
+        ('<!-- > <failure message="ignored"/> --><error message="actual"/>', "F", "actual"),
+        ('<failure message="limit">' + "x" * 400 + '</failure>', "F", "limit | " + "x" * 300),
+    )
+    for i, (children, status, message) in enumerate(diagnostics):
+        write(os.path.join(repo, "diagnostic.xml"), suite("unit",
+              '<testcase classname="S" name="Diagnostic">' + children + '</testcase>'))
+        p = run(tg, "flake", "--junit", "diagnostic.xml", "--history", "diagnostic-history.jsonl",
+                "--out", "diagnostic-quarantine.yml", cwd=repo)
+        check(f"failure diagnostic flake {i}", p.returncode == 0, p.stderr)
+        history = open(os.path.join(repo, "diagnostic-history.jsonl"), encoding="utf-8").read().splitlines()
+        result = json.loads(history[-1])["results"]["S.Diagnostic"]
+        # Flake history retains at most 200 characters of the parser's excerpt.
+        check(f"failure diagnostic preserved {i}", result["s"] == status and result["m"] == message[:200],
+              str(result))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tg", required=True, help="path to tg binary")
@@ -191,6 +463,8 @@ def main():
         "--quarantine", "quarantine.yml", cwd=repo,
     )
     check("quarantined failure warns", p.returncode == 0, f"got {p.returncode}: {p.stdout}")
+
+    check_junit_resolution(tg, tmp)
 
     # --- 6. fingerprint stability + drift ---
     # Scan only the src/ subtree; outputs live in repo/ root so runs cannot

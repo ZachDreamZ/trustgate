@@ -171,9 +171,34 @@ rather than mixing non-equivalent hash formats.
 }
 ```
 
-File refs: `path[:start[-end]]`. Test refs must exactly match a JUnit
-`classname.name` (or bare `name`) **and** have passed. Failed-but-quarantined
-tests degrade to warnings when the policy allows it.
+File refs: `path[:start[-end]]`. Test refs must exactly match an unambiguous
+JUnit `classname.name` or bare `name` **and** have passed. A bare name shared
+by different suites/classes is rejected with an `ambiguous-test` finding,
+even if all matching tests passed. Cite `AuthTest.RefreshToken` to select a
+class, or prefix the suite name when needed: `auth.AuthTest.RefreshToken`
+(or `auth.RefreshToken` for a testcase without a classname). Nested suite
+names form a dot-separated path, outermost first. Every reference must
+identify exactly one suite/class/name combination; collisions between bare
+and qualified spellings are also ambiguous. If no spelling is unique,
+give the tests distinct suite/class/name values in the JUnit producer.
+
+JUnit attribute values accept either quote style and XML whitespace around `=`.
+Predefined XML entities and decimal/hexadecimal character references are decoded
+before matching; literal attribute whitespace is normalized according to XML.
+Unsupported or malformed references in consumed values are input errors. This
+remains a JUnit scanner, not a general validating XML parser or DTD processor.
+
+Repeated observations of the same suite/class/name across JUnit files merge
+with worst status winning: failed/error, then skipped, then passed. Failed
+but quarantined tests degrade to warnings when the policy allows it;
+quarantine cannot resolve an ambiguous citation. `--lenient` retains its
+usual behavior of demoting findings to warnings.
+
+Quarantine matching uses the resolved test's canonical JUnit ID
+(`classname.name`, or `name` without a classname), as emitted by `tg flake`.
+Bare and suite-qualified citations use that same ID, and `quarantined_used`
+reports canonical IDs. An ambiguous canonical ID cannot authorize quarantine;
+use distinct producer metadata before collecting a new quarantine history.
 
 ## Layout
 

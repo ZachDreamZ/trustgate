@@ -390,7 +390,7 @@ int cmdGate(const std::vector<std::string>& args) {
         return 1;
     }
 
-    std::map<std::string, char> testStatus;
+    std::vector<TestCaseResult> testCases;
     int junitTotal = 0;
     for (const std::string& jp : junitPaths) {
         JUnitReport rep;
@@ -400,17 +400,10 @@ int cmdGate(const std::vector<std::string>& args) {
             std::cerr << "cannot read JUnit file '" << jp << "': " << ex.what() << "\n";
             return 1;
         }
-        for (const TestCaseResult& tc : rep.cases) {
-            // Worst status wins when shards overlap: F > S > P.
-            auto it = testStatus.find(tc.id);
-            if (it == testStatus.end()) {
-                testStatus[tc.id] = tc.status;
-            } else if (tc.status == 'F' || (tc.status == 'S' && it->second == 'P')) {
-                it->second = tc.status;
-            }
-        }
+        testCases.insert(testCases.end(), rep.cases.begin(), rep.cases.end());
         junitTotal += static_cast<int>(rep.cases.size());
     }
+    const auto testStatus = junitTestStatus(testCases);
 
     std::vector<std::string> quarantinedIds;
     std::vector<QuarantineEntry> qlist = loadQuarantine(quarantinePath);

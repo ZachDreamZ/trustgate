@@ -51,7 +51,7 @@ bool containsId(const std::vector<std::string>& list, const std::string& id) {
 }  // namespace
 
 VerifyReport verifyClaims(const std::vector<Claim>& claims, const Policy& policy,
-                          const std::map<std::string, char>& testStatus,
+                          const std::map<std::string, ResolvedJUnitTest>& testStatus,
                           const std::vector<std::string>& quarantinedIds,
                           const VerifyOptions& opts) {
     VerifyReport report;
@@ -124,21 +124,29 @@ VerifyReport verifyClaims(const std::vector<Claim>& claims, const Policy& policy
                     true);
                 continue;
             }
-            if (it->second == 'F') {
+            const ResolvedJUnitTest& test = it->second;
+            if (test.status == 'A') {
+                add("ambiguous-test", c.id,
+                    "claim '" + c.id + "': test reference '" + t +
+                        "' matches multiple JUnit tests; cite an unambiguous "
+                        "classname.name or suite-qualified reference",
+                    true);
+            } else if (test.status == 'F') {
                 ++report.stats.failedTests;
-                if (policy.quarantineAllow && containsId(quarantinedIds, t)) {
+                if (policy.quarantineAllow && !test.quarantineId.empty() &&
+                    containsId(quarantinedIds, test.quarantineId)) {
                     add("quarantined-failure", c.id,
                         "claim '" + c.id + "': test '" + t +
                             "' failed but is quarantined (allowed)",
                         false);
-                    if (!containsId(report.stats.quarantinedUsed, t)) {
-                        report.stats.quarantinedUsed.push_back(t);
+                    if (!containsId(report.stats.quarantinedUsed, test.quarantineId)) {
+                        report.stats.quarantinedUsed.push_back(test.quarantineId);
                     }
                 } else {
                     add("failed-test", c.id,
                         "claim '" + c.id + "': cited test '" + t + "' failed", true);
                 }
-            } else if (it->second == 'S') {
+            } else if (test.status == 'S') {
                 add("skipped-test", c.id,
                     "claim '" + c.id + "': cited test '" + t +
                         "' was skipped (not evidence)",
