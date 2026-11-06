@@ -14,31 +14,104 @@ std::string junitIdentity(const std::string& classname, const std::string& name)
 
 namespace {
 
-// Returns attribute value or "". Handles both quote styles. Matches only
-// standalone attribute names (preceded by whitespace), so "name" never
-// matches inside "classname".
-std::string getAttr(const std::string& tag, const std::string& name) {
-    const std::string key = name + "=";
-    std::string::size_type from = 0;
-    while (true) {
-        std::string::size_type pos = tag.find(key, from);
-        if (pos == std::string::npos) return "";
-        if (pos == 0) return "";  // malformed tag; bail out
-        char prev = tag[pos - 1];
-        if (prev == ' ' || prev == '\t' || prev == '\n' || prev == '\r') {
-            std::string::size_type vpos = pos + key.size();
-            if (vpos >= tag.size()) return "";
-            char q = tag[vpos];
-            if (q != '"' && q != '\'') {
-                from = pos + 1;
-                continue;
-            }
-            std::string::size_type end = tag.find(q, vpos + 1);
-            if (end == std::string::npos) return "";
-            return tag.substr(vpos + 1, end - vpos - 1);
+bool xmlSpace(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+// XML attributes use character values, not their serialized spellings. Decode
+// the predefined entities and numeric references once; custom entities are not
+// supported by this scanner and must not silently create different identities.
+std::string attributeValue(const std::string& raw) {
+    std::string out;
+    for (std::size_t i = 0; i < raw.size(); ++i) {
+        char c = raw[i];
+        if (c != '&') {
+            if (c == '<' || (static_cast<unsigned char>(c) < 0x20 && !xmlSpace(c)))
+                throw std::runtime_error("invalid XML attribute character");
+            if (c == '\r' && i + 1 < raw.size() && raw[i + 1] == '\n') ++i;
+            out += xmlSpace(c) ? ' ' : c;
+            continue;
         }
-        from = pos + 1;
+        auto end = raw.find(';', i + 1);
+        if (end == std::string::npos) throw std::runtime_error("unterminated XML character reference");
+        const std::string ref = raw.substr(i + 1, end - i - 1);
+        unsigned int cp = 0;
+        if (ref == "amp") cp = '&';
+        else if (ref == "lt") cp = '<';
+        else if (ref == "gt") cp = '>';
+        else if (ref == "quot") cp = '"';
+        else if (ref == "apos") cp = '\'';
+        else if (!ref.empty() && ref[0] == '#') {
+            std::size_t digit = 1;
+            unsigned int base = 10;
+            if (digit < ref.size() && ref[digit] == 'x') { base = 16; ++digit; }
+            if (digit == ref.size()) throw std::runtime_error("empty XML character reference");
+            for (; digit < ref.size(); ++digit) {
+                char d = ref[digit];
+                unsigned int value = d >= '0' && d <= '9' ? static_cast<unsigned int>(d - '0') :
+                    d >= 'a' && d <= 'f' ? static_cast<unsigned int>(d - 'a' + 10) :
+                    d >= 'A' && d <= 'F' ? static_cast<unsigned int>(d - 'A' + 10) : base;
+                if (value >= base || cp > (0x10ffffU - value) / base)
+                    throw std::runtime_error("invalid XML character reference");
+                cp = cp * base + value;
+            }
+        } else {
+            throw std::runtime_error("unsupported XML character reference");
+        }
+        if (!(cp == 9 || cp == 10 || cp == 13 || (cp >= 0x20 && cp <= 0xd7ff) ||
+              (cp >= 0xe000 && cp <= 0xfffd) || (cp >= 0x10000 && cp <= 0x10ffff)))
+            throw std::runtime_error("invalid XML character reference");
+        if (cp <= 0x7f) out += static_cast<char>(cp);
+        else if (cp <= 0x7ff) {
+            out += static_cast<char>(0xc0 | (cp >> 6));
+            out += static_cast<char>(0x80 | (cp & 0x3f));
+        } else if (cp <= 0xffff) {
+            out += static_cast<char>(0xe0 | (cp >> 12));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3f));
+            out += static_cast<char>(0x80 | (cp & 0x3f));
+        } else {
+            out += static_cast<char>(0xf0 | (cp >> 18));
+            out += static_cast<char>(0x80 | ((cp >> 12) & 0x3f));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3f));
+            out += static_cast<char>(0x80 | (cp & 0x3f));
+        }
+        i = end;
     }
+    return out;
+}
+
+// Walk complete quoted attributes, accepting XML whitespace around '='. Never
+// look for an attribute name inside another attribute's quoted value.
+std::string getAttr(const std::string& tag, const std::string& name) {
+    std::size_t pos = 1;
+    while (pos < tag.size() && !xmlSpace(tag[pos]) && tag[pos] != '>' && tag[pos] != '/') ++pos;
+    std::string result;
+    bool found = false;
+    while (pos < tag.size()) {
+        const auto beforeSpace = pos;
+        while (pos < tag.size() && xmlSpace(tag[pos])) ++pos;
+        if (pos == tag.size() || tag[pos] == '>' || tag[pos] == '/') break;
+        if (pos == beforeSpace) throw std::runtime_error("missing XML attribute separator");
+        const auto start = pos;
+        while (pos < tag.size() && !xmlSpace(tag[pos]) && tag[pos] != '=' && tag[pos] != '>' && tag[pos] != '/') ++pos;
+        const std::string key = tag.substr(start, pos - start);
+        while (pos < tag.size() && xmlSpace(tag[pos])) ++pos;
+        if (key.empty() || pos == tag.size() || tag[pos++] != '=')
+            throw std::runtime_error("invalid XML attribute");
+        while (pos < tag.size() && xmlSpace(tag[pos])) ++pos;
+        if (pos == tag.size() || (tag[pos] != '\'' && tag[pos] != '"'))
+            throw std::runtime_error("unquoted XML attribute");
+        char quote = tag[pos++];
+        auto end = tag.find(quote, pos);
+        if (end == std::string::npos) throw std::runtime_error("unterminated XML attribute");
+        if (key == name) {
+            if (found) throw std::runtime_error("duplicate XML attribute");
+            result = attributeValue(tag.substr(pos, end - pos));
+            found = true;
+        }
+        pos = end + 1;
+    }
+    return result;
 }
 
 std::string::size_type tagEnd(const std::string& xml, std::string::size_type at) {

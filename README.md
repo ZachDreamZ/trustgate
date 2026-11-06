@@ -182,6 +182,12 @@ identify exactly one suite/class/name combination; collisions between bare
 and qualified spellings are also ambiguous. If no spelling is unique,
 give the tests distinct suite/class/name values in the JUnit producer.
 
+JUnit attribute values accept either quote style and XML whitespace around `=`.
+Predefined XML entities and decimal/hexadecimal character references are decoded
+before matching; literal attribute whitespace is normalized according to XML.
+Unsupported or malformed references in consumed values are input errors. This
+remains a JUnit scanner, not a general validating XML parser or DTD processor.
+
 Repeated observations of the same suite/class/name across JUnit files merge
 with worst status winning: failed/error, then skipped, then passed. Failed
 but quarantined tests degrade to warnings when the policy allows it;

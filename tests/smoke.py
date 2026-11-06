@@ -233,6 +233,53 @@ def check_junit_resolution(tg, root):
     quoted = [suite("unit>detail", testcase(name="Run>detail", classname="Auth>detail", status="F"))]
     gate_case("quoted tag delimiters", quoted, "unit>detail.Auth>detail.Run>detail", "failed-test")
 
+    # XML serialization must not change the identity of repeated observations.
+    equivalent_names = (
+        ("unit>detail", "unit&gt;detail", "unit>detail"),
+        ("unit&gt;detail", "unit&#62;detail", "unit>detail"),
+        ("unit&#62;detail", "unit&#x3e;detail", "unit>detail"),
+        ("u&amp;n&lt;i&quot;t&apos;", "u&#38;n&#60;i&#34;t&#39;", 'u&n<i"t\''),
+        ("caf\u00e9", "caf&#233;", "caf\u00e9"),
+        ("\U0001f600", "&#x1F600;", "\U0001f600"),
+        ("unit detail", "unit\r\ndetail", "unit detail"),
+        ("unit&amp;gt;detail", "unit&#38;gt;detail", "unit&gt;detail"),
+    )
+    for i, (left, right, decoded) in enumerate(equivalent_names):
+        for attr in ("suite", "class", "test"):
+            def encoded_case(value, status):
+                sn, cn, tn = (value, "Auth", "Run") if attr == "suite" else (
+                    ("unit", value, "Run") if attr == "class" else ("unit", "Auth", value))
+                return (f'<testsuite name="{sn}"><testcase classname="{cn}" name="{tn}">'
+                        + ("<failure/>" if status == "F" else "") + "</testcase></testsuite>")
+            ref = {"suite": f"{decoded}.Auth.Run", "class": f"unit.{decoded}.Run",
+                   "test": f"unit.Auth.{decoded}"}[attr]
+            reports = [encoded_case(left, "P"), encoded_case(right, "F")]
+            first = gate_case(f"XML identity {i} {attr}", reports, ref, "failed-test")
+            second = gate_case(f"XML identity {i} {attr} reversed", reports, ref,
+                               "failed-test", reverse=True)
+            check(f"XML identity {i} {attr} deterministic", first == second)
+            gate_case(f"XML identity {i} {attr} passing control", [encoded_case(right, "P")], ref)
+
+    for i, space in enumerate((" ", "\t", "\n", "\r", " \t\r\n ")):
+        alternate = (f'<testsuite name{space}={space}\'unit\'>'
+                     f'<testcase classname{space}={space}\'Auth\' name{space}={space}\'Run\'>'
+                     "<failure/></testcase></testsuite>")
+        reports = [suite("unit", testcase(classname="Auth")), alternate]
+        for ref in ("Run", "Auth.Run", "unit.Auth.Run"):
+            gate_case(f"XML attribute whitespace {i} {ref}", reports, ref, "failed-test")
+            gate_case(f"XML attribute whitespace {i} {ref} reversed", reports, ref,
+                      "failed-test", reverse=True)
+
+    # Unsupported/malformed attribute values cannot become partial evidence.
+    for i, value in enumerate(("&unknown;", "&amp", "&#;", "&#x;", "&#-1;", "&#0;",
+                               "&#xD800;", "&#xFFFE;", "&#x110000;",
+                               "&#999999999999999999999999;", "unescaped&value")):
+        write(os.path.join(repo, "invalid.xml"),
+              f'<testsuite name="{value}">' + testcase(classname="Auth") + '</testsuite>')
+        p = run(tg, "gate", "--claims", "claims.json", "--policy", "policy.json",
+                "--junit", "invalid.xml", "--out", "invalid.json", cwd=repo)
+        check(f"invalid XML attribute rejected {i}", p.returncode == 1, p.stdout + p.stderr)
+
     # Quarantine IDs belong to resolved tests, not the spelling of a citation.
     def quarantine(*ids):
         write(os.path.join(repo, "quarantine.yml"), "version: 1\nquarantined:\n" +
